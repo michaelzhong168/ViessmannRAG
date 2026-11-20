@@ -49,19 +49,29 @@
 - **P0 一票否决**：有 P0 不得合并，不得「先合后修」。
 - **返工最多 2 轮**：第 2 轮仍不通过 → 暂停，多半是规格歧义，走 CHANGE_REQUEST。
 
-## 3. 分支 / 提交 / PR
+## 3. 分支模型 / 提交 / PR
+
+| 分支 | 角色 | 谁能写 |
+|---|---|---|
+| `main` | **发布线**，只接受来自 `dev` 的合并 | 任何人都不直接推送（GitHub 分支保护 + 本地 pre-push hook 双重拦截） |
+| `dev` | **开发基线**，所有功能在这里汇聚 | 只接受 PR 合并 |
+| `feat/gNN-<slug>` | 每关一个特性分支 | agent 推送，之后提 PR |
+| `fix/<slug>`、`chore/<slug>` | 修 bug / 工程改动 | 同上 |
 
 ```bash
-git switch -c feat/gNN-<slug> main     # 例：feat/g06-rag-core
+git switch dev && git pull                 # 从 dev 起
+git switch -c feat/gNN-<slug>              # 例：feat/g06-rag-core
 git commit -m "feat(gNN): <一句话>"
-git push -u origin feat/gNN-<slug>
+git push -u origin feat/gNN-<slug>         # 推特性分支，不要推 main
+# → 在 GitHub 上对 `dev` 开 PR
 ```
 
-- **提交信息**：`feat(g06): 第一个 RAG 闭环`；文档改动不适用（文档不在仓库）；修 bug `fix(gNN): …`。
-- **PR 标题**：`[GNN] <关卡主题>`；正文用 [.github/pull_request_template.md](.github/pull_request_template.md)。
+- **提交信息**：`feat(g06): 第一个 RAG 闭环`；修 bug `fix(gNN): …`；工程改动 `chore: …`。
+- **PR 标题**：`[GNN] <关卡主题>`；**base 分支必须是 `dev`**，不是 `main`。
 - **PR 正文必须自带三段产物**（计划 / 交付 / 评审），因为仓库不存这些文件 —— PR 是唯一留档。
-- **合并**：squash 到 `main`，一关一条干净提交。
-- **`main` 不直接 push**（维护者的工程配置提交除外）。
+- **合并**：squash 到 `dev`，一关一条干净提交。
+- **发布**：`dev` → `main` 也走 PR（发布批次），由维护者操作。
+- **红线**：任何情况下不得 `git push origin main`；本地 pre-push hook 会直接拒绝。
 
 ## 4. 每关收工
 
