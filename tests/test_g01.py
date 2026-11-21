@@ -222,26 +222,60 @@ def test_cli_without_api_key_exits_nonzero_with_hint(tmp_path):
 # ────────────────────────── A2#9 ──────────────────────────
 
 
-def test_no_secret_literal_in_repo():
-    skip_dirs = {".git", ".venv", "docs", "node_modules", ".pytest_cache", "__pycache__"}
-    skip_suffixes = {".md", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2"}
+SKIP_DIRS = {".git", ".venv", "docs", "node_modules", ".pytest_cache", "__pycache__"}
+BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2"}
 
+#: 真实密钥形状：前缀后跟 16 位以上字母数字（文档类文件只按这个形状判）
+REALISTIC_SECRET = re.compile(re.escape(SECRET_PREFIX) + r"[A-Za-z0-9]{16,}")
+
+
+def _secret_offenders(root: Path) -> list[str]:
+    """扫描 root 下的密钥字面量。
+
+    - 源码 / 配置：出现前缀即算命中（严格）
+    - Markdown：只查真实密钥形状，允许占位符示例写法
+    """
     offenders: list[str] = []
-    for path in ROOT.rglob("*"):
+    for path in root.rglob("*"):
         if not path.is_file():
             continue
-        relative = path.relative_to(ROOT)
-        if relative.parts[0] in skip_dirs:
+        relative = path.relative_to(root)
+        if relative.parts[0] in SKIP_DIRS:
             continue
         if path.name.startswith(".env"):  # .env / .env.example / .env.local
             continue
-        if path.suffix.lower() in skip_suffixes:
+        if path.suffix.lower() in BINARY_SUFFIXES:
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        if SECRET_PREFIX in text:
+        if path.suffix.lower() == ".md":
+            hit = REALISTIC_SECRET.search(text) is not None
+        else:
+            hit = SECRET_PREFIX in text
+        if hit:
             offenders.append(str(relative))
+    return offenders
 
+
+def test_no_secret_literal_in_repo():
+    offenders = _secret_offenders(ROOT)
     assert not offenders, f"仓库内出现密钥字面量：{offenders}"
+
+
+def test_secret_scanner_catches_key_in_markdown(tmp_path):
+    """文档也要查：README 里贴真实密钥必须被抓，占位符示例不能误报。"""
+    fake_key = SECRET_PREFIX + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    (tmp_path / "README.md").write_text(f"| key | {fake_key} |\n", encoding="utf-8")
+    (tmp_path / "PLACEHOLDER.md").write_text(f"| key | {SECRET_PREFIX}xxx |\n", encoding="utf-8")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "x.py").write_text(
+        "KEY = '" + SECRET_PREFIX + "zz'\n", encoding="utf-8"
+    )
+
+    offenders = _secret_offenders(tmp_path)
+
+    assert "README.md" in offenders
+    assert "tools/x.py" in offenders
+    assert "PLACEHOLDER.md" not in offenders
