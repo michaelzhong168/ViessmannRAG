@@ -548,6 +548,30 @@ def test_audit_can_read_legacy_value_with_bare_pipe(tmp_path):
     )
 
 
+def test_audit_encoding_failure_preserves_report(tmp_path):
+    doc = parse_pdf(FIXTURE, tmp_path / "pages")
+    audit = tmp_path / "audit.md"
+    write_audit(doc, audit, chapter_count=4)
+    previous = audit.read_bytes()
+
+    with pytest.raises(UnicodeEncodeError):
+        write_audit(doc, audit, model_codes_detected="\ud800")
+
+    assert audit.read_bytes() == previous
+
+
+def test_audit_invalid_utf8_preserves_report(tmp_path):
+    doc = parse_pdf(FIXTURE, tmp_path / "pages")
+    audit = tmp_path / "audit.md"
+    previous = b"unreadable audit: \xff"
+    audit.write_bytes(previous)
+
+    with pytest.raises(UnicodeDecodeError):
+        write_audit(doc, audit, chapter_count=4)
+
+    assert audit.read_bytes() == previous
+
+
 def _run_parse_cli(
     source: Path, pages: Path, audit: Path
 ) -> subprocess.CompletedProcess:
@@ -595,6 +619,25 @@ def test_parse_cli_matches_public_audit_output(tmp_path):
     }
 
 
+def test_parse_cli_rejects_reusing_report_for_another_pdf(tmp_path):
+    pages = tmp_path / "pages"
+    audit = tmp_path / "audit.md"
+    doc = parse_pdf(FIXTURE, pages)
+    write_audit(doc, audit, chapter_count=4)
+    original = {path: path.read_bytes() for path in [audit, *pages.iterdir()]}
+
+    source = tmp_path / "another.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=100, height=100)
+        pdf.save(source)
+
+    run = _run_parse_cli(source, pages, audit)
+
+    assert run.returncode == 2
+    assert "--out-dir" in run.stderr and "--audit" in run.stderr
+    assert all(path.read_bytes() == value for path, value in original.items())
+
+
 @pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink"])
 def test_parse_cli_rejects_audit_path_aliasing_source(tmp_path, alias):
     source = tmp_path / "source.pdf"
@@ -636,6 +679,41 @@ def test_parse_rejects_two_page_paths_aliasing_one_output(tmp_path):
     assert primary.read_bytes() == b"existing output"
 
 
+def test_parse_render_failure_preserves_existing_pages(tmp_path, monkeypatch):
+    parse_pdf(FIXTURE, tmp_path)
+    original = {path: path.read_bytes() for path in tmp_path.iterdir()}
+    source = tmp_path / "different.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=100, height=100)
+        pdf.new_page(width=100, height=100)
+        pdf.save(source)
+
+    get_pixmap = pymupdf.Page.get_pixmap
+
+    def fail_on_second_page(page, *args, **kwargs):
+        if page.number == 1:
+            raise OSError("second page failed")
+        return get_pixmap(page, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", fail_on_second_page)
+    with pytest.raises(OSError, match="second page failed"):
+        parse_pdf(source, tmp_path)
+
+    assert all(path.read_bytes() == value for path, value in original.items())
+    assert set(tmp_path.iterdir()) == {source, *original}
+
+
+def test_parse_rejects_page_destination_directory(tmp_path):
+    directory = tmp_path / "page_002.png"
+    directory.mkdir()
+
+    with pytest.raises(ValueError, match="page_002.png"):
+        parse_pdf(FIXTURE, tmp_path)
+
+    assert set(tmp_path.iterdir()) == {directory}
+    assert directory.is_dir()
+
+
 def test_parse_cli_rejects_audit_path_matching_page_path(tmp_path):
     pages = tmp_path / "pages"
     run = _run_parse_cli(FIXTURE, pages, pages / "page_002.png")
@@ -643,6 +721,31 @@ def test_parse_cli_rejects_audit_path_matching_page_path(tmp_path):
     assert run.returncode == 2
     assert "指向同一文件" in run.stderr
     assert not pages.exists()
+
+
+@pytest.mark.parametrize("use_parent", [False, True])
+def test_parse_cli_rejects_audit_path_matching_pages_directory(tmp_path, use_parent):
+    pages = tmp_path / "products" / "pages"
+    audit = pages.parent if use_parent else pages
+    run = _run_parse_cli(FIXTURE, pages, audit)
+
+    assert run.returncode == 2
+    assert "页图目录冲突" in run.stderr
+    assert not pages.parent.exists()
+
+
+def test_parse_cli_writes_audit_to_new_parent_of_pages(tmp_path):
+    pages = tmp_path / "products" / "pages"
+    audit = pages.parent / "audit.md"
+
+    run = _run_parse_cli(FIXTURE, pages, audit)
+
+    assert run.returncode == 0, run.stderr
+    assert _read_audit(audit)["page_count"] == 2
+    assert sorted(path.name for path in pages.iterdir()) == [
+        "page_001.png",
+        "page_002.png",
+    ]
 
 
 def test_write_audit_rejects_existing_page_or_pdf_output(tmp_path):
@@ -658,6 +761,24 @@ def test_write_audit_rejects_existing_page_or_pdf_output(tmp_path):
             write_audit(doc, path=target)
     assert source.read_bytes() == original
     assert page.read_bytes() == png
+
+
+def test_write_audit_rejects_aliases_after_cwd_changes(tmp_path, monkeypatch):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(FIXTURE.read_bytes())
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(tmp_path)
+    doc = parse_pdf("source.pdf", "pages")
+    page = tmp_path / doc.pages[0].image_path
+    original = {path: path.read_bytes() for path in (source, page)}
+
+    monkeypatch.chdir(other)
+    assert Path(doc.pdf_path) == source
+    for target in (source, page):
+        with pytest.raises(ValueError, match="指向同一文件"):
+            write_audit(doc, target)
+    assert all(path.read_bytes() == value for path, value in original.items())
 
 
 # ────────────────────── S-1…S-6 补充断言 ──────────────────────

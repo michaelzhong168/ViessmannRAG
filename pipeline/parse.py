@@ -16,6 +16,7 @@ import html
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pymupdf
 
@@ -88,6 +89,9 @@ class Document:
     pages: list[Page]
     pdf_path: str
 
+    # 解析时的目录供别名检查使用，Page.image_path 保留调用方提供的路径格式。
+    _path_base = Path()
+
 
 def _garbled_ratio(text: str) -> float:
     """计算乱码率：非白名单字符数 / ``len(text)``。
@@ -130,7 +134,7 @@ def parse_pdf(path: str | Path, out_dir: str | Path = "data/pages") -> Document:
 
 
 class _OutputPathConflict(ValueError):
-    """输出路径与另一份输入或输出指向同一文件。"""
+    """输出位置已被其它输入、输出或不兼容的文件占用。"""
 
 
 def _require_distinct_files(*paths: Path) -> None:
@@ -154,9 +158,17 @@ def _require_distinct_files(*paths: Path) -> None:
             )
 
 
+def _require_regular_output(path: Path) -> None:
+    if path.exists() and not path.is_file():
+        raise _OutputPathConflict(f"输出目标不是普通文件：{path}")
+
+
 def _parse_pdf(
     pdf_path: Path, image_dir: Path, audit_path: Path | None = None
 ) -> Document:
+    path_base = Path.cwd()
+    pdf_path = path_base / pdf_path
+    output_dir = path_base / image_dir
     matrix = pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)
     pages: list[Page] = []
     with pymupdf.open(pdf_path) as pdf:
@@ -164,38 +176,52 @@ def _parse_pdf(
             image_dir / f"page_{page_no:03d}.png"
             for page_no in range(1, pdf.page_count + 1)
         ]
-        all_paths = [pdf_path, *image_paths]
+        destinations = [path_base / path for path in image_paths]
+        all_paths = [pdf_path, *destinations]
         if audit_path is not None:
+            audit_path = path_base / audit_path
             all_paths.append(audit_path)
         _require_distinct_files(*all_paths)
 
-        image_dir.mkdir(parents=True, exist_ok=True)
-        for page_no, (page, image_path) in enumerate(
-            zip(pdf, image_paths, strict=True), start=1
-        ):
-            text = page.get_text()
-            pixmap = page.get_pixmap(matrix=matrix)
-            pixmap.save(str(image_path))
+        for destination in destinations:
+            _require_regular_output(destination)
+        if audit_path is not None:
+            _check_cli_audit(audit_path, pdf_path.stem, output_dir)
 
-            ratio = _garbled_ratio(text)
-            pages.append(
-                Page(
-                    page_no=page_no,
-                    text=text,
-                    image_path=str(image_path),
-                    text_layer=_is_text_layer(text, ratio),
-                    garbled_ratio=ratio,
-                    width_pt=page.rect.width,
-                    height_pt=page.rect.height,
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".parse-", dir=output_dir) as temporary_dir:
+            staged_dir = Path(temporary_dir)
+            for page_no, (page, image_path) in enumerate(
+                zip(pdf, image_paths, strict=True), start=1
+            ):
+                text = page.get_text()
+                pixmap = page.get_pixmap(matrix=matrix)
+                pixmap.save(staged_dir / image_path.name)
+
+                ratio = _garbled_ratio(text)
+                pages.append(
+                    Page(
+                        page_no=page_no,
+                        text=text,
+                        image_path=str(image_path),
+                        text_layer=_is_text_layer(text, ratio),
+                        garbled_ratio=ratio,
+                        width_pt=page.rect.width,
+                        height_pt=page.rect.height,
+                    )
                 )
-            )
-        return Document(
+            for destination in destinations:
+                (staged_dir / destination.name).replace(destination)
+
+        doc = Document(
             doc_id=pdf_path.stem,
             page_count=pdf.page_count,
             render_zoom=RENDER_ZOOM,
             pages=pages,
             pdf_path=str(pdf_path),
         )
+        doc._path_base = path_base
+        return doc
 
 
 def _doc_audit_fields(doc: Document) -> dict[str, object]:
@@ -220,7 +246,7 @@ def _read_audit_table(path: Path) -> dict[str, str]:
     """读取上次写出的单元格，保留值的字面文本。"""
     try:
         content = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, UnicodeError):
+    except FileNotFoundError:
         return {}
 
     values: dict[str, str] = {}
@@ -237,6 +263,23 @@ def _read_audit_table(path: Path) -> dict[str, str]:
         # 旧版输出的值可能有裸竖线，第一处内部分隔符之后仍属于值。
         values[key] = value.removeprefix(" ").removesuffix(" ").replace("|", "&#124;")
     return values
+
+
+def _check_cli_audit(audit_path: Path, doc_id: str, image_dir: Path) -> None:
+    _require_regular_output(audit_path)
+    target = audit_path.resolve()
+    image_dir = image_dir.resolve()
+    if target == image_dir or target in image_dir.parents:
+        raise _OutputPathConflict(f"审计报告路径与页图目录冲突：{audit_path}")
+    parent = target.parent
+    if not parent.is_dir() and parent != image_dir and parent not in image_dir.parents:
+        raise _OutputPathConflict(f"审计报告目录不存在：{parent}")
+
+    previous_doc_id = _read_audit_table(audit_path).get("doc_id")
+    if previous_doc_id is not None and previous_doc_id != _escape_audit_cell(doc_id):
+        raise _OutputPathConflict(
+            "审计报告属于另一份 PDF，请使用独立的 --out-dir 和 --audit"
+        )
 
 
 def _escape_audit_cell(value: str) -> str:
@@ -272,7 +315,9 @@ def write_audit(
     """
     audit_path = Path(path)
     _require_distinct_files(
-        audit_path, Path(doc.pdf_path), *(Path(page.image_path) for page in doc.pages)
+        audit_path,
+        doc._path_base / doc.pdf_path,
+        *(doc._path_base / page.image_path for page in doc.pages),
     )
 
     merged = _read_audit_table(audit_path)
@@ -294,7 +339,12 @@ def write_audit(
 
     lines = ["# 语料审计", "", "| 字段 | 值 |", "| --- | --- |"]
     lines.extend(f"| {key} | {value} |" for key, value in ordered.items())
-    audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    content = ("\n".join(lines) + "\n").encode("utf-8")
+    audit_path = audit_path.resolve()
+    with TemporaryDirectory(prefix=".audit-", dir=audit_path.parent) as temporary_dir:
+        staged_audit = Path(temporary_dir) / audit_path.name
+        staged_audit.write_bytes(content)
+        staged_audit.replace(audit_path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -311,7 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         doc = _parse_pdf(args.pdf, Path(args.out_dir), Path(args.audit))
         write_audit(doc, args.audit)
-    except _OutputPathConflict as exc:
+    except (_OutputPathConflict, UnicodeError) as exc:
         parser.error(str(exc))
     print(
         f"parsed doc_id={doc.doc_id} page_count={doc.page_count} "
