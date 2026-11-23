@@ -1,4 +1,4 @@
-"""Extract G03 layout in the coordinate system of the rendered page."""
+"""提取 PDF 版面，统一使用页图方向的 pt 坐标。"""
 
 from __future__ import annotations
 
@@ -66,11 +66,10 @@ def _page_bbox(
     return list((pymupdf.Rect(bbox) * matrix) & bounds)
 
 
-def _extract_tables(
-    page: pymupdf.Page, matrix: pymupdf.Matrix, bounds: pymupdf.Rect
-) -> list[Table]:
+def _extract_tables(page: pymupdf.Page) -> list[Table]:
     tables = []
-    # find_tables expects the unrotated grid. The input PDF stays read-only.
+    # 在未旋转的页面上识别表格，再用原旋转矩阵转换表格框和行框。
+    matrix, bounds = page.rotation_matrix, page.rect
     rotation = page.rotation
     page.set_rotation(0)
     try:
@@ -105,51 +104,53 @@ def _layout_order(item: Heading | Block | Table) -> tuple[int, float, float, str
     return item.page_no, item.bbox[1], item.bbox[0], text
 
 
-def analyze_layout(
-    doc: Document, top_ratio: float = 0.08, bottom_ratio: float = 0.08
-) -> Layout:
-    """Find text blocks and ruled tables, then assign heading levels and chapters."""
+def _extract_blocks(
+    page: pymupdf.Page, tables: list[Table], top_ratio: float, bottom_ratio: float
+) -> tuple[list[Block], int]:
+    matrix, bounds = page.rotation_matrix, page.rect
+    top = bounds.height * top_ratio
+    bottom = bounds.height * (1 - bottom_ratio)
+    table_boxes = [pymupdf.Rect(table.bbox) for table in tables]
     blocks: list[Block] = []
-    tables: list[Table] = []
     removed = 0
-    with pymupdf.open(doc.pdf_path) as pdf:
-        for page in pdf:
-            matrix, bounds = page.rotation_matrix, page.rect
-            page_tables = _extract_tables(page, matrix, bounds)
-            tables.extend(page_tables)
-            table_boxes = [pymupdf.Rect(table.bbox) for table in page_tables]
-            text = page.get_text("dict", flags=pymupdf.TEXTFLAGS_TEXT)
-            for block in text["blocks"]:
-                lines = block["lines"]
-                spans = [span for line in lines for span in line["spans"]]
-                if not spans:
-                    continue
-                bbox = _page_bbox(block["bbox"], matrix, bounds)
-                rect = pymupdf.Rect(bbox)
-                if rect.is_empty:
-                    continue
-                center = (rect.tl + rect.br) * 0.5
-                if not bounds.height * top_ratio <= center.y <= bounds.height * (1 - bottom_ratio):
-                    removed += 1
-                    continue
-                if any(center in table_box for table_box in table_boxes):
-                    continue
-                block_text = "\n".join(
-                    "".join(span["text"] for span in line["spans"]) for line in lines
-                )
-                if block_text.strip():
-                    blocks.append(
-                        Block(
-                            page_no=page.number + 1,
-                            bbox=bbox,
-                            text=block_text,
-                            font_size=max(span["size"] for span in spans if span["text"]),
-                            chapter=UNSECTIONED,
-                        )
-                    )
+    for block in page.get_text("dict", flags=pymupdf.TEXTFLAGS_TEXT)["blocks"]:
+        lines = block["lines"]
+        spans = [span for line in lines for span in line["spans"]]
+        if not spans:
+            continue
+        bbox = _page_bbox(block["bbox"], matrix, bounds)
+        rect = pymupdf.Rect(bbox)
+        if rect.is_empty:
+            continue
+        center = (rect.tl + rect.br) * 0.5
+        if not top <= center.y <= bottom:
+            removed += 1
+            continue
+        # 表格文字已随单元格提取，避免重复进入正文。
+        if any(center in table_box for table_box in table_boxes):
+            continue
+        text = "\n".join(
+            "".join(span["text"] for span in line["spans"]) for line in lines
+        )
+        if not text.strip():
+            continue
+        blocks.append(
+            Block(
+                page_no=page.number + 1,
+                bbox=bbox,
+                text=text,
+                font_size=max(span["size"] for span in spans if span["text"]),
+                chapter=UNSECTIONED,
+            )
+        )
+    return blocks, removed
 
+
+def _assign_chapters(
+    blocks: list[Block], tables: list[Table], removed: int
+) -> Layout:
     sizes = sorted({round(block.font_size, 1) for block in blocks}, reverse=True)
-    # The smallest text size supplies the body baseline for this document.
+    # 以全文最小字号作为正文基准，其余字号按降序分级。
     levels = {size: min(level, 3) for level, size in enumerate(sizes[:-1], start=1)}
     layout = Layout([], [], [], removed)
     chapter = UNSECTIONED
@@ -168,6 +169,25 @@ def analyze_layout(
                 Heading(item.text, level, item.page_no, item.bbox, item.font_size)
             )
     return layout
+
+
+def analyze_layout(
+    doc: Document, top_ratio: float = 0.08, bottom_ratio: float = 0.08
+) -> Layout:
+    """逐页提取正文和线框表格，再按全篇字号和阅读顺序划分章节。"""
+    blocks: list[Block] = []
+    tables: list[Table] = []
+    removed = 0
+    with pymupdf.open(doc.pdf_path) as pdf:
+        for page in pdf:
+            page_tables = _extract_tables(page)
+            page_blocks, page_removed = _extract_blocks(
+                page, page_tables, top_ratio, bottom_ratio
+            )
+            blocks.extend(page_blocks)
+            tables.extend(page_tables)
+            removed += page_removed
+    return _assign_chapters(blocks, tables, removed)
 
 
 def write_layout(layout: Layout, path: str | Path = DEFAULT_LAYOUT_PATH) -> None:

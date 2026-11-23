@@ -1,4 +1,4 @@
-"""Generate the deterministic synthetic PDF used for G03 acceptance."""
+"""生成字节稳定的 G03 验收用合成 PDF。"""
 
 from pathlib import Path
 
@@ -26,7 +26,7 @@ def build(out_path=DEFAULT_OUT):
     path = Path(out_path)
     with pymupdf.open() as pdf:
         page = pdf.new_page(width=500, height=700)
-        # Deliberately insert these out of reading order.
+        # 打乱文本插入顺序，以验证输出按版面排序。
         for y, text, size in (
             (665, "Table of Contents 69", 10),
             (185, "Second body", 10),

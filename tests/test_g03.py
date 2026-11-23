@@ -1,4 +1,4 @@
-"""Offline acceptance tests for G03 v1.4 and shared contract v4.2 §2.2."""
+"""G03 v1.4 和总纲 v4.2 §2.2 的离线验收测试。"""
 
 import json
 import subprocess
@@ -30,7 +30,7 @@ def layout(document):
 
 
 def test_header_footer_removal(document, layout):
-    """FR-001: reject both margin blocks and count each block once."""
+    """FR-001：剔除上下页边缘的块，按块计数。"""
     assert layout.header_footer_removed == 2
     assert all(
         "Table of Contents 69" not in item.text and "Running header" not in item.text
@@ -44,7 +44,7 @@ def test_header_footer_removal(document, layout):
 
 
 def test_heading_levels(layout):
-    """FR-002: rank 4 distinct rounded sizes, capping levels at 3."""
+    """FR-002：验证四档字号的层级顺序和三级上限。"""
     assert [item.text for item in layout.headings] == [
         "Title A", "Title B", "Title C", "Title D", "Title E"
     ]
@@ -57,7 +57,7 @@ def test_heading_levels(layout):
 
 
 def test_rounded_sizes_share_a_level(tmp_path):
-    """FR-002: exercise rounding before levels reach the cap."""
+    """FR-002：在达到层级上限前验证字号舍入。"""
     path = tmp_path / "rounded.pdf"
     with pymupdf.open() as pdf:
         page = pdf.new_page()
@@ -71,7 +71,7 @@ def test_rounded_sizes_share_a_level(tmp_path):
 
 
 def test_chapters_and_json_tree(layout):
-    """FR-003: use the nearest preceding heading, including across pages."""
+    """FR-003：验证正文归入最近的前置标题，章节可跨页延续。"""
     assert {item.text: item.chapter for item in layout.body_blocks} == {
         "Opening body": "(未分章)",
         "Pressure 0.15 bar": "Title A",
@@ -87,7 +87,7 @@ def test_chapters_and_json_tree(layout):
 
 
 def test_table_rows_and_header(layout):
-    """FR-004: line-based extraction preserves the first row and data rows."""
+    """FR-004：验证线框表的表头和数据行。"""
     assert len(layout.tables) == 2
     table = layout.tables[0]
     assert table.header == ["Fault Code", "Cause"]
@@ -104,7 +104,7 @@ def test_table_rows_and_header(layout):
 
 
 def test_rotated_boxes_match_rendered_page(document, layout):
-    """FR-005: compare rendered page pixels and explicitly rotated pt boxes."""
+    """FR-005：对照页图像素及手算旋转结果验证 pt 坐标。"""
     with pymupdf.open(FIXTURE) as pdf:
         page = pdf[1]
         assert page.rotation == 90
@@ -143,7 +143,7 @@ def test_rotated_boxes_match_rendered_page(document, layout):
         for x, y in red_pixels
     )
     for x0, y0, x1, y1 in table.row_bboxes:
-        # Sample away from the column divider and the cell text.
+        # 在远离列分隔线和单元格文字的位置取样。
         py = round((y0 + (y1 - y0) / 4) * RENDER_ZOOM)
         for edge in (x0, x1):
             px = round(edge * RENDER_ZOOM)
@@ -158,7 +158,7 @@ def test_rotated_boxes_match_rendered_page(document, layout):
 
 
 def test_stable_layout_roundtrip(document, layout, tmp_path):
-    """FR-006: canonical list order and canonical JSON on independent extracts."""
+    """FR-006：验证列表排序，以及独立提取的 JSON 字节一致性。"""
     for items in (layout.headings, layout.tables, layout.body_blocks):
         keys = [
             (item.page_no, item.bbox[1], item.bbox[0],
@@ -181,7 +181,7 @@ def test_stable_layout_roundtrip(document, layout, tmp_path):
     [(FIXTURE, "true", 5, 2), (FIXTURE.with_name("mini.pdf"), "false", 0, 0)],
 )
 def test_cli_updates_audit(pdf, fault_table, chapters, tables, tmp_path, monkeypatch):
-    """FR-006: CLI reuses the G02 audit writer and preserves existing fields."""
+    """FR-006：验证 CLI 更新审计并保留原有字段。"""
     monkeypatch.setenv("PYTHONPATH", str(ROOT))
     audit = tmp_path / "语料审计.md"
     doc = parse_pdf(pdf, tmp_path / "data/pages")
