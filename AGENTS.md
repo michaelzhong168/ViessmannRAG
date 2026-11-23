@@ -74,6 +74,18 @@ git push -u origin feat/gNN-<slug>         # 推特性分支，不要推 main
 - **发布**：`dev` → `main` 也走 PR（发布批次），由维护者操作。
 - **红线**：任何情况下不得 `git push origin main`；本地 pre-push hook 会直接拒绝。
 
+### GitHub 认证（gh CLI，否则每次开 PR 都会撞上）
+
+`gh` 默认把 token 存进 macOS Keychain，**非 GUI 进程（agent / 后台任务）读不到**，表现为 `gh auth status` 报 token invalid，而 `git push`（SSH）却是好的。所以统一用明文存储：
+
+```bash
+gh auth login --web --insecure-storage --git-protocol ssh   # 一次，之后长期有效
+gh auth status                                              # 必须看到 Logged in to github.com
+```
+
+- token 落在 `~/.config/gh/hosts.yml`（权限 600，仓库外）；**不要**写进 `.env` / 环境变量 / 代码。
+- 换机或 token 被撤销后重跑上面第一条即可；不要用不带 `--insecure-storage` 的登录方式，否则又回到 keychain。
+
 ## 4. 每关收工
 
 1. PR 合并、链接记录到在线文档「项目主档」的进度看板。
