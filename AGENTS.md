@@ -1,115 +1,66 @@
 # AGENTS.md · 开发约定
 
-> 任何进入本仓库的 agent 先读这一页。项目说明见 [README.md](README.md)。
+项目用途和运行入口见 [README.md](README.md)。
 
-## 0. 文档在哪（先看这条）
+## 0. 规格与文档
 
-**需求规格与计划文档不在本仓库**，在在线文档：<https://docs.qq.com/desktop/mydoc/folder/AdkPbToQjhNO>
+关卡需求和共享契约以[腾讯文档文件夹](https://docs.qq.com/desktop/mydoc/folder/AdkPbToQjhNO)中的「十四关需求规格」和「需求规格总纲」为准。同一文件夹也有「项目主档」和「规格审计与复核」。
 
-| 内容 | 位置 |
-|---|---|
-| 14 关需求规格（含可执行断言） | 在线文档「十四关需求规格」 |
-| 契约基线（EU schema / HTTP / citation / trace / 内核签名） | 在线文档「需求规格总纲」 |
-| 项目主档（进度看板、演进日志） | 在线文档「项目主档」 |
-| 审计与复核记录 | 在线文档「规格审计与复核」 |
-| 本地工作副本 | `docs/spces/G01.md` … `G14.md`（14 关全量副本）+ `README.md`（总纲副本）（**已 gitignore，不入仓**） |
+| 内容 | 本地工作副本 |
+| --- | --- |
+| GNN 关卡规格 | `docs/spces/GNN.md`，实际编号为 G01 至 G14 |
+| 共享契约总纲 | `docs/spces/README.md`，包括 EU schema、HTTP、citation、trace 和内核签名 |
 
-**需求以线上文档为准**：`docs/spces/` 只是副本，线上改了要重新导出；本地改了由维护者手动上传回线上，agent 不直接写线上文档。
+交接记录中写明所用关卡规格和总纲的文件名与版本。当前关卡规格用 §二的 FR ID 映射到具名测试，用 §七记录人工确认项。规格另有标识时，按所用版本记录需求 ID 或条款位置。线上更新后，由维护者重新导出本地工作副本。缺少所需规格或发现版本冲突时，记录缺项或冲突，请维护者提供或核定版本。维护者负责规格修订与线上回填。
 
-**仓库只放：项目说明 + 代码 + 测试 + 工程配置。** 禁止把规格、计划、审计、笔记提交进 git；
-`docs/` 下的一切对 agent 可读，但不进版本库。
+项目说明、代码、测试和工程配置可提交。`agents/` 中的角色卡和交接模板属于工程配置。`docs/` 下的规格副本、计划、审计和交付记录只在本地使用。
 
-## 1. 铁律
+## 1. 关卡约束
 
-1. **规格是验收依据，agent 不得修改。** 规格有问题 → 在 PR 描述里写 `CHANGE_REQUEST`（改哪个字段 / 为什么 / 影响哪些关），由维护者改在线文档与本地副本。
-2. **一次只做一关。** 不合并多关，不顺手改别的关的产出；已验收关卡的代码只在规格明确要求时动。
-3. **断言不可放宽。** 不删断言、不 `skip`、不 `xfail`、不 mock 掉被测函数本身、不为过测试改测试。
-4. **证据优先。** 结论必须带原始命令输出；「测试通过」四个字不算证据。
-5. **禁止项**：不用 LangChain / LlamaIndex / Dify / RAGFlow 作主实现；不上向量库 / rerank / Agent 自主规划；模型不得生成 citation 对象、`eu_id`、页码；不改写原文、不做单位换算；不用境外模型 API；密钥零进仓、零进镜像、零进前端。
-6. **mock-first。** 门禁必须在无 `DASHSCOPE_API_KEY`、无真实 PDF、无 Docker 的环境跑通；真实联调是人工确认项，不阻塞合并。
+- 一次实现一关。涉及已验收关卡的代码变更须有规格依据。
+- 验收以规格和共享契约为准。发现规格问题时，在计划、任务记录或交付报告中写 `CHANGE_REQUEST`，包括涉及条款、原因和受影响关卡。开 PR 后在正文引用。由维护者决定是否更新线上规格、版本和本地副本。
+- 保留验收断言。禁止删除验收断言或为通过测试而修改测试。禁止使用 `skip` 或 `xfail`，禁止 mock 被测函数本身。
+- 采用 mock-first。门禁在无 `DASHSCOPE_API_KEY`、无真实 PDF、无 Docker 的环境运行。真实联调按当关规格的人工验收条款记录，由维护者确认，可在合并后完成。
+- 禁用 LangChain、LlamaIndex、Dify、RAGFlow 作为主实现。禁用向量库、rerank、Agent 自主规划、境外模型 API。citation 对象、`eu_id` 和页码由程序确定。保留逐字原文和原始单位。密钥只在授权的本地运行环境或部署密钥服务使用，禁止进入仓库、镜像和前端。
 
-## 2. 三角色流水线
+## 2. Reader → Coder → Reviewer
 
-```text
-规格 GNN ──► Reader ──► [门禁] ──► Coder ──► [自测] ──► Reviewer ──► PASS ──► PR
-              │                     ▲                    │
-          实现计划              返工（≤2 轮）◄──── CHANGES_REQUESTED
-```
+执行角色时先读对应角色卡及其链接的交接模板。
 
-| 角色 | 产出（写进本地 `docs/gNN/`，不进仓） | 禁止 | 通过条件 |
-|---|---|---|---|
-| **Reader** | 前置核验 + A2 断言逐条映射到测试函数 + 歧义清单 + 结论（READY / BLOCKED / NEED_DECISION） | 写实现代码、改规格、装依赖 | 前置清楚、断言无遗漏、结论 READY |
-| **Coder** | 文件清单 + **原始** pytest 输出 + 断言逐条状态 + 未解决项 + 是否需 CHANGE_REQUEST | 改测试放宽、编造前置数据 | 单关 + 全量回归全绿 |
-| **Reviewer** | 结论（PASS / CHANGES_REQUESTED）+ 自己重跑的原始输出 + **变异探针**结果 + 问题清单（P0/P1/P2） | 改实现、放行无证据项 | 自己跑绿、断言全覆盖、变异能被抓住、禁止项无违例 |
+| 角色 | 交接产物 | 关卡门禁 |
+| --- | --- | --- |
+| [Reader](agents/reader.md) | `docs/gNN/plan.md` | 核验前置，按规格需求 ID 或条款位置逐项映射到验收证据。标明自动检查与人工确认。只有 `READY` 才进入实现。 |
+| [Coder](agents/coder.md) | `docs/gNN/report.md` | 提交改动清单、断言逐项结果、原始命令输出，以及未解决和人工确认项。单关和全量回归通过后进入复核。 |
+| [Reviewer](agents/reviewer.md) | `docs/gNN/review.md` | 独立复跑单关和全量回归，核对所有验收项、硬约束和变异探针。通过独立复核并取得 `PASS` 后开 PR。 |
 
-### 门禁规则
+- **独立复核**。用新 agent 实例，交付规格、仓库、基线和被审快照。Reviewer 先独立检查和复跑，再读取计划或交付报告做对照。Coder 的推理过程留在原上下文。
+- **隔离变异**。在临时 Git 工作树、克隆或等效隔离环境中，针对本关高风险断言做 2–4 个探针。每次只改变一个行为，记录预期失败用例、实际失败原因和原始输出。对应测试仍绿或因无关原因失败时，该断言的有效性未得到验证，补齐证据后才能给 PASS。保证隔离环境具备门禁所需的 Git 信息、依赖和夹具，只复制所需文件。变异仅在隔离目录执行。
+- **严重度与返工**。P0 阻断合并。P1 默认须修复，维护者接受延期时在评审记录写明理由和跟踪位置。P2 记录建议即可。返工最多两轮，之后仍未通过则记录问题及所需决策。涉及规格时提交 `CHANGE_REQUEST`。
+- **工程改动**。文档、角色配置等独立工程任务使用任务说明作为验收来源，在 `docs/<任务名>/` 留存交接记录。单项跑对应的验收检查并跑全量回归，按相同方式独立复核。探针针对实际交付物和对应检查。
+- **证据**。记录命令、退出结果与原始输出，分享前仅遮蔽密钥或敏感数据并标注遮蔽处。
 
-- **Reader 不是 READY 就停**：`BLOCKED` 报告缺什么，不得编造；`NEED_DECISION` 交维护者定。
-- **Coder 首次交付必须全绿**才进评审；带失败进评审的直接 `CHANGES_REQUESTED`。
-- **Reviewer 必须换上下文**：新 agent 实例，只给规格 + 仓库，不给 Coder 的推理过程；同一会话自评不算评审。
-- **变异探针**：在临时副本（`cp -R . /tmp/mut_$$`）里破坏 2–4 处实现（改阈值、删过滤、伪造 citation），确认对应断言**会红**；抓不住的断言记为无效。**绝不在工作区做变异。**
-- **P0 一票否决**：有 P0 不得合并，不得「先合后修」。
-- **返工最多 2 轮**：第 2 轮仍不通过 → 暂停，多半是规格歧义，走 CHANGE_REQUEST。
+## 3. 分支、提交与 PR
 
-## 3. 分支模型 / 提交 / PR
+| 分支 | 用途 |
+| --- | --- |
+| `main` | 发布线，由维护者通过 PR 从 `dev` 合入。禁止直接推送。 |
+| `dev` | 开发基线，通过 PR 合入。 |
+| `feat/gNN-<slug>` | 一关一分支，从 `dev` 起。 |
+| `fix/<slug>`、`chore/<slug>` | 修复和工程改动，从 `dev` 起。 |
 
-| 分支 | 角色 | 谁能写 |
-|---|---|---|
-| `main` | **发布线**，只接受来自 `dev` 的合并 | 任何人都不直接推送（GitHub 分支保护 + 本地 pre-push hook 双重拦截） |
-| `dev` | **开发基线**，所有功能在这里汇聚 | 只接受 PR 合并 |
-| `feat/gNN-<slug>` | 每关一个特性分支 | agent 推送，之后提 PR |
-| `fix/<slug>`、`chore/<slug>` | 修 bug / 工程改动 | 同上 |
+- 提交示例为 `feat(g06): 第一个 RAG 闭环`、`fix(gNN): …`、`chore: …`。关卡 PR 标题为 `[GNN] <关卡主题>`，工程 PR 用对应主题。
+- PR 的 base 必须是 `dev`，正文使用 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。写明改动、关键证据、风险和人工确认项。完整交接材料留在本地。
+- 通过门禁后 squash 到 `dev`。关卡 PR 合并后，由维护者在「项目主档」登记 PR、状态、进度与工时，更新文件树和演进日志。真实联调的未验证项列入 PR 测试说明与风险。
+
+## 4. 验证命令
 
 ```bash
-git switch dev && git pull                 # 从 dev 起
-git switch -c feat/gNN-<slug>              # 例：feat/g06-rag-core
-git commit -m "feat(gNN): <一句话>"
-git push -u origin feat/gNN-<slug>         # 推特性分支，不要推 main
-# → 在 GitHub 上对 `dev` 开 PR
+python -m pytest -q tests/test_gNN.py  # GNN 替换为实际关卡编号
+python -m pytest -q -rs                # 全量回归，skipped 应为 0
+git log --oneline dev..HEAD
+git diff --stat dev...HEAD
 ```
 
-- **提交信息**：`feat(g06): 第一个 RAG 闭环`；修 bug `fix(gNN): …`；工程改动 `chore: …`。
-- **PR 标题**：`[GNN] <关卡主题>`；**base 分支必须是 `dev`**，不是 `main`。
-- **PR 正文按 `.github/PULL_REQUEST_TEMPLATE.md` 写**：描述 / 关联 Issue / 具体改动 / 测试说明 / 检查清单，**另加「风险」一节**。写清「代码改了什么、测了什么、有什么风险」，不复述规格断言、不放规格证明。
-- **计划 / 交付报告 / 评审报告留在本地 `docs/gNN/`**（不进仓），PR 只写结论与关键证据，不再要求三段产物全文。
-- **合并**：squash 到 `dev`，一关一条干净提交。
-- **发布**：`dev` → `main` 也走 PR（发布批次），由维护者操作。
-- **红线**：任何情况下不得 `git push origin main`；本地 pre-push hook 会直接拒绝。
+使用 `.python-version` 指定的 Python 3.11。依赖按当关需要追加到 `requirements.txt`。G10、G14 的前端纯函数断言使用 Node ≥ 18。G06 起的 CLI 手工冒烟可用 `python -m cli ask "F4 怎么办" --model B1KA`。实际模型名称由维护者以百炼控制台为准。
 
-### GitHub 认证（gh CLI，否则每次开 PR 都会撞上）
-
-`gh` 默认把 token 存进 macOS Keychain，**非 GUI 进程（agent / 后台任务）读不到**，表现为 `gh auth status` 报 token invalid，而 `git push`（SSH）却是好的。所以统一用明文存储：
-
-```bash
-gh auth login --web --insecure-storage --git-protocol ssh   # 一次，之后长期有效
-gh auth status                                              # 必须看到 Logged in to github.com
-```
-
-- token 落在 `~/.config/gh/hosts.yml`（权限 600，仓库外）；**不要**写进 `.env` / 环境变量 / 代码。
-- 换机或 token 被撤销后重跑上面第一条即可；不要用不带 `--insecure-storage` 的登录方式，否则又回到 keychain。
-
-## 4. 每关收工
-
-1. PR 合并、链接记录到在线文档「项目主档」的进度看板。
-2. 在线文档回填四件事：当前状态 → 进度与工时 → 文件树 `○`→`●` → 演进日志追加一行。
-3. 若发生契约变更：维护者改在线文档并升版本号，受影响的关卡规格同步改。
-4. A4 人工确认项（真机 / 真密钥 / 真 PDF）写进 PR 的「测试说明」与「风险」，留给真人；不阻塞合并，但要标注未验证。
-
-## 5. 命令速查
-
-```bash
-pytest -q tests/test_gNN.py    # 单关验收
-pytest -q                      # 全量回归
-pytest -q -rs                  # 看 skipped（应为 0）
-python -m cli ask "F4 怎么办" --model B1KA   # G06 起的手工冒烟
-git log --oneline main..HEAD   # 本关提交
-git diff --stat main...HEAD    # 本关改动面
-```
-
-## 6. 环境
-
-- Python **3.11**（`.python-version` 已固定；本机用 uv 装的 3.11.16，SQLite 3.53.1，`trigram` 已实测）。
-- Node ≥ 18 用于个别前端纯函数断言（G10 / G14）。
-- 依赖只加当关需要的，逐关追加进 `requirements.txt`。
-- **文档类产物一律不进仓**：`语料审计.md`、`验收报告.md`、`eval/report.md`、`eval/golden_manual.jsonl`（人写金标）、`notes/` 全部已在 `.gitignore`；需要留档的贴进 PR 描述或在线文档。
-- 模型名以百炼控制台当前可用为准（人工确认项）。
+语料审计、验收报告、评测报告、人工金标和 `notes/` 由 `.gitignore` 排除，留在本地。
