@@ -23,22 +23,12 @@ from tools import llm  # noqa: E402  （需要先把仓库根塞进 sys.path）
 #: 拼接构造，避免测试文件自身命中 A2#9 的字面量扫描
 SECRET_PREFIX = "sk" + "-"
 
-#: B2 表的 14 个键：7 模型 + 3 Langfuse + 4 部署
+#: 本关只读取的 4 个键（新键由用到它的关卡自行追加）
 CONTRACT_ENV_KEYS = {
     "DASHSCOPE_API_KEY",
     "LLM_BASE_URL",
     "LLM_MODEL",
-    "LLM_ROUTER_MODEL",
-    "EMBED_MODEL",
-    "RERANK_MODEL",
     "LLM_TIMEOUT_S",
-    "LANGFUSE_HOST",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "APP_ENV",
-    "COS_BUCKET",
-    "COS_SECRET_ID",
-    "COS_SECRET_KEY",
 }
 
 #: 占位符形状：密钥前缀（可带 lf-）之后只有 x / . / _ / - / <...>，故不拼字面量
