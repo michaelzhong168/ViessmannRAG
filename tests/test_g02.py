@@ -16,9 +16,11 @@ import struct
 import subprocess
 import sys
 from dataclasses import fields
+from hashlib import sha256
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -178,12 +180,12 @@ def test_png_pixel_size_matches_pt_times_render_zoom(tmp_path):
 
 
 def test_default_out_dir_writes_data_pages_paths(tmp_path, monkeypatch):
-    monkeypatch.chdir(ROOT)
+    monkeypatch.chdir(tmp_path)
 
     doc = parse_pdf(FIXTURE)
 
     for page in doc.pages:
-        expected = ROOT / "data" / "pages" / f"page_{page.page_no:03d}.png"
+        expected = tmp_path / "data" / "pages" / f"page_{page.page_no:03d}.png"
         assert expected.is_file(), f"默认路径页图不存在：{expected}"
         assert page.image_path == f"data/pages/page_{page.page_no:03d}.png"
         assert Path(page.image_path).is_file()
@@ -238,6 +240,9 @@ def test_garbled_ratio_counts_replacement_and_control_chars():
     assert ratio("“”„–—…°±×µ®") == 0.0
     assert ratio("Ⅰ Ⅱ ½ №") == 0.0
     assert ratio("中\ue000") == 0.5
+    assert ratio("☃☃☃\n") == 0.75
+    assert ratio("\u1680\u2028\u00a0") == 0.0
+    assert ratio("中\x1c\u00ad\u202e") == 0.75
 
 
 def test_blank_page_is_ocr_required(tmp_path):
@@ -310,16 +315,25 @@ def test_high_garbled_page_is_ocr_required(tmp_path):
 
 def test_parse_pdf_is_idempotent(tmp_path):
     first = parse_pdf(FIXTURE, tmp_path)
+    original_hashes = [
+        sha256(Path(page.image_path).read_bytes()).digest() for page in first.pages
+    ]
     second = parse_pdf(FIXTURE, tmp_path)
 
     assert first.doc_id == second.doc_id
     assert first.page_count == second.page_count == len(second.pages)
-    for left, right in zip(first.pages, second.pages):
+    assert len(first.pages) == len(second.pages)
+    for left, right in zip(first.pages, second.pages, strict=True):
         assert left.page_no == right.page_no
         assert left.text == right.text
         assert left.garbled_ratio == right.garbled_ratio
+        assert left.text_layer is right.text_layer
+        assert left.image_path == right.image_path
         assert left.width_pt == right.width_pt
         assert left.height_pt == right.height_pt
+    assert [
+        sha256(Path(page.image_path).read_bytes()).digest() for page in second.pages
+    ] == original_hashes
 
 
 # ────────────────────── FR-005 语料审计报告 ──────────────────────
@@ -378,11 +392,11 @@ def test_audit_doc_fields_match_document(tmp_path):
 
 def test_audit_default_path_at_repo_root(tmp_path, monkeypatch):
     doc = parse_pdf(FIXTURE, tmp_path / "pages")
-    monkeypatch.chdir(ROOT)
+    monkeypatch.chdir(tmp_path)
 
     write_audit(doc)
 
-    audit_path = ROOT / "语料审计.md"
+    audit_path = tmp_path / "语料审计.md"
     assert audit_path.is_file()
     content = audit_path.read_text(encoding="utf-8")
     for key in (
@@ -500,6 +514,150 @@ def test_audit_is_byte_deterministic(tmp_path):
 
     write_audit(doc, path=first)
     assert first.read_bytes() == second.read_bytes(), "同一路径重写后字节不一致"
+
+
+def test_audit_roundtrip_preserves_table_cells_and_numeric_text(tmp_path):
+    doc = parse_pdf(FIXTURE, tmp_path / "pages")
+    audit_path = tmp_path / "audit.md"
+
+    write_audit(
+        doc,
+        path=audit_path,
+        model_codes_detected="B1KA | B1HA",
+        quote_verify_rate="1.00",
+        downstream_note=" 一行\n下一行 & 原文 ",
+    )
+    first = audit_path.read_bytes()
+    content = first.decode("utf-8")
+    assert "| model_codes_detected | B1KA &#124; B1HA |" in content
+    assert "| quote_verify_rate | 1.00 |" in content
+    assert "| downstream_note |  一行&#10;下一行 &amp; 原文  |" in content
+
+    write_audit(doc, path=audit_path)
+    assert audit_path.read_bytes() == first
+
+
+def test_audit_can_read_legacy_value_with_bare_pipe(tmp_path):
+    doc = parse_pdf(FIXTURE, tmp_path / "pages")
+    audit_path = tmp_path / "audit.md"
+    audit_path.write_text("| model_codes_detected | B1KA | B1HA |\n", encoding="utf-8")
+
+    write_audit(doc, path=audit_path)
+    assert "| model_codes_detected | B1KA &#124; B1HA |" in audit_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def _run_parse_cli(
+    source: Path, pages: Path, audit: Path
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pipeline.parse",
+            str(source),
+            "--out-dir",
+            str(pages),
+            "--audit",
+            str(audit),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_parse_cli_matches_public_audit_output(tmp_path):
+    pages = tmp_path / "cli-pages"
+    audit = tmp_path / "cli-audit.md"
+    expected_audit = tmp_path / "expected.md"
+
+    run = _run_parse_cli(FIXTURE, pages, audit)
+    assert run.returncode == 0, run.stderr
+    assert sorted(path.name for path in pages.iterdir()) == [
+        "page_001.png",
+        "page_002.png",
+    ]
+    doc = parse_pdf(FIXTURE, tmp_path / "expected-pages")
+    write_audit(doc, path=expected_audit)
+    assert audit.read_bytes() == expected_audit.read_bytes()
+    assert _read_audit(audit) == {
+        "doc_id": "mini",
+        "page_count": 2,
+        "text_layer_pages": [1, 2],
+        "ocr_required_pages": [],
+        "render_zoom": 2.0,
+        "has_fault_code_table": "unknown",
+        "model_codes_detected": "",
+    }
+
+
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink"])
+def test_parse_cli_rejects_audit_path_aliasing_source(tmp_path, alias):
+    source = tmp_path / "source.pdf"
+    original = FIXTURE.read_bytes()
+    source.write_bytes(original)
+    audit = source if alias == "direct" else tmp_path / "audit.md"
+    if alias == "symlink":
+        audit.symlink_to(source)
+    elif alias == "hardlink":
+        audit.hardlink_to(source)
+    pages = tmp_path / "pages"
+
+    run = _run_parse_cli(source, pages, audit)
+    assert run.returncode == 2
+    assert "指向同一文件" in run.stderr
+    assert source.read_bytes() == audit.read_bytes() == original
+    assert not pages.exists()
+
+
+def test_parse_rejects_page_path_aliasing_source_before_render(tmp_path):
+    source = tmp_path / "source.pdf"
+    original = FIXTURE.read_bytes()
+    source.write_bytes(original)
+    (tmp_path / "page_002.png").hardlink_to(source)
+
+    with pytest.raises(ValueError, match="指向同一文件"):
+        parse_pdf(source, tmp_path)
+    assert not (tmp_path / "page_001.png").exists()
+    assert source.read_bytes() == original
+
+
+def test_parse_rejects_two_page_paths_aliasing_one_output(tmp_path):
+    primary = tmp_path / "page_001.png"
+    primary.write_bytes(b"existing output")
+    (tmp_path / "page_002.png").hardlink_to(primary)
+
+    with pytest.raises(ValueError, match="指向同一文件"):
+        parse_pdf(FIXTURE, tmp_path)
+    assert primary.read_bytes() == b"existing output"
+
+
+def test_parse_cli_rejects_audit_path_matching_page_path(tmp_path):
+    pages = tmp_path / "pages"
+    run = _run_parse_cli(FIXTURE, pages, pages / "page_002.png")
+
+    assert run.returncode == 2
+    assert "指向同一文件" in run.stderr
+    assert not pages.exists()
+
+
+def test_write_audit_rejects_existing_page_or_pdf_output(tmp_path):
+    source = tmp_path / "source.pdf"
+    original = FIXTURE.read_bytes()
+    source.write_bytes(original)
+    doc = parse_pdf(source, tmp_path / "pages")
+    page = Path(doc.pages[0].image_path)
+    png = page.read_bytes()
+
+    for target in (source, page):
+        with pytest.raises(ValueError, match="指向同一文件"):
+            write_audit(doc, path=target)
+    assert source.read_bytes() == original
+    assert page.read_bytes() == png
 
 
 # ────────────────────── S-1…S-6 补充断言 ──────────────────────

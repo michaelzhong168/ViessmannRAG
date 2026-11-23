@@ -12,6 +12,7 @@ import 用 ``pymupdf``（不是 ``fitz``，后者在 1.28.2 会向 stderr 打 de
 from __future__ import annotations
 
 import argparse
+import html
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +42,7 @@ AUDIT_DEFAULTS = {
     "model_codes_detected": "",
 }
 
-#: 计划 §6.b 的白名单 W：这些字符**不计入**乱码分子。
+#: G02 §五的白名单。空白和不可打印字符在匹配这些区间前处理。
 #:
 #: 其余字符（U+FFFD、C0/C1 控制符、私用区/代理区/未分配码位、白名单外的文种
 #: 等）一律计入。分母为 ``len(text)``（含空白与换行），空文本返回 0.0。
@@ -50,24 +51,18 @@ ALLOWED_CODEPOINT_RANGES: tuple[tuple[int, int], ...] = (
     (0x00A0, 0x00FF),  # Latin-1 补充（° ± × µ ® 与 NBSP）
     (0x0370, 0x03FF),  # 希腊字母
     (0x2000, 0x206F),  # 通用标点（“ ” „ – — …）
-    (0x2100, 0x214F),  # 字母式符号
-    (0x2150, 0x218F),  # 数字形式（Ⅰ Ⅱ ½ №）
+    (0x2116, 0x2116),  # №，既有验收覆盖的数字标记
+    (0x2150, 0x218F),  # 数字形式（Ⅰ Ⅱ）
     (0x2190, 0x21FF),  # 箭头
     (0x2200, 0x22FF),  # 数学运算符
     (0x2500, 0x25FF),  # 制表 / 几何图形（■ □ ● ○）
-    (0x2600, 0x26FF),  # 杂项符号
     (0x3000, 0x303F),  # CJK 标点（。、《》）
     (0x3400, 0x4DBF),  # CJK 扩展 A
     (0x4E00, 0x9FFF),  # CJK 统一表意
     (0xF900, 0xFAFF),  # CJK 兼容表意
-    (0xFE10, 0xFE1F),  # 竖排形式
-    (0xFE30, 0xFE4F),  # CJK 兼容形式
     (0xFF00, 0xFFEF),  # 全角 / 半角形式
-    (0x20000, 0x2FA1F),  # CJK 扩展 B–F + 兼容补充
+    (0x2F800, 0x2FA1F),  # CJK 兼容表意补充
 )
-
-#: 空白字符显式放行（ASCII 控制区的 \t / \n / \r 不在可打印区间里）。
-ALLOWED_WHITESPACE = frozenset(" \t\n\r\u3000\u00a0")
 
 
 @dataclass
@@ -105,7 +100,11 @@ def _garbled_ratio(text: str) -> float:
 
     garbled = 0
     for char in text:
-        if char in ALLOWED_WHITESPACE:
+        # str.isspace() 也接受四个 ASCII 分隔控制符，Unicode 白空格不含它们。
+        if char.isspace() and char not in "\x1c\x1d\x1e\x1f":
+            continue
+        if not char.isprintable():
+            garbled += 1
             continue
         codepoint = ord(char)
         for low, high in ALLOWED_CODEPOINT_RANGES:
@@ -127,17 +126,54 @@ def parse_pdf(path: str | Path, out_dir: str | Path = "data/pages") -> Document:
     ``out_dir`` 不存在则创建；页图命名 ``page_{page_no:03d}.png``（1-based）。
     ``text`` 保持 ``page.get_text()`` 原文，不 strip、不清洗。
     """
-    pdf_path = Path(path)
-    image_dir = Path(out_dir)
-    image_dir.mkdir(parents=True, exist_ok=True)
+    return _parse_pdf(Path(path), Path(out_dir))
 
+
+class _OutputPathConflict(ValueError):
+    """输出路径与另一份输入或输出指向同一文件。"""
+
+
+def _require_distinct_files(*paths: Path) -> None:
+    resolved_paths: dict[Path, Path] = {}
+    existing_files: dict[tuple[int, int], Path] = {}
+    for path in paths:
+        resolved = path.resolve()
+        previous = resolved_paths.get(resolved)
+        if previous is None:
+            resolved_paths[resolved] = path
+            try:
+                info = resolved.stat()
+            except FileNotFoundError:
+                continue
+            identity = (info.st_dev, info.st_ino)
+            previous = existing_files.get(identity)
+            existing_files[identity] = path
+        if previous is not None:
+            raise _OutputPathConflict(
+                f"文件路径冲突：{previous} 与 {path} 指向同一文件"
+            )
+
+
+def _parse_pdf(
+    pdf_path: Path, image_dir: Path, audit_path: Path | None = None
+) -> Document:
     matrix = pymupdf.Matrix(RENDER_ZOOM, RENDER_ZOOM)
     pages: list[Page] = []
-    pdf = pymupdf.open(pdf_path)
-    try:
-        for page_no, page in enumerate(pdf, start=1):
+    with pymupdf.open(pdf_path) as pdf:
+        image_paths = [
+            image_dir / f"page_{page_no:03d}.png"
+            for page_no in range(1, pdf.page_count + 1)
+        ]
+        all_paths = [pdf_path, *image_paths]
+        if audit_path is not None:
+            all_paths.append(audit_path)
+        _require_distinct_files(*all_paths)
+
+        image_dir.mkdir(parents=True, exist_ok=True)
+        for page_no, (page, image_path) in enumerate(
+            zip(pdf, image_paths, strict=True), start=1
+        ):
             text = page.get_text()
-            image_path = image_dir / f"page_{page_no:03d}.png"
             pixmap = page.get_pixmap(matrix=matrix)
             pixmap.save(str(image_path))
 
@@ -160,8 +196,6 @@ def parse_pdf(path: str | Path, out_dir: str | Path = "data/pages") -> Document:
             pages=pages,
             pdf_path=str(pdf_path),
         )
-    finally:
-        pdf.close()
 
 
 def _doc_audit_fields(doc: Document) -> dict[str, object]:
@@ -182,31 +216,36 @@ def _doc_audit_fields(doc: Document) -> dict[str, object]:
     }
 
 
-def _read_audit_table(path: str | Path) -> dict[str, object]:
-    """读取旧 ``语料审计.md`` 的 markdown 表；不存在 / 坏掉时返回空 dict。"""
+def _read_audit_table(path: Path) -> dict[str, str]:
+    """读取上次写出的单元格，保留值的字面文本。"""
     try:
-        content = Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+        content = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, UnicodeError):
         return {}
 
-    values: dict[str, object] = {}
-    for line in content.splitlines():
+    values: dict[str, str] = {}
+    for line in content.split("\n"):
         stripped = line.strip()
         if not (stripped.startswith("|") and stripped.endswith("|")):
             continue
-        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
-        if len(cells) != 2:
-            continue
-        key, raw = cells
-        if not key or key == "字段":
+        key, separator, value = stripped[1:-1].partition("|")
+        key = key.strip()
+        if not separator or not key or key == "字段":
             continue
         if set(key) <= {"-", ":", " "}:
             continue
-        try:
-            values[key] = json.loads(raw)
-        except (ValueError, TypeError):
-            values[key] = raw
+        # 旧版输出的值可能有裸竖线，第一处内部分隔符之后仍属于值。
+        values[key] = value.removeprefix(" ").removesuffix(" ").replace("|", "&#124;")
     return values
+
+
+def _escape_audit_cell(value: str) -> str:
+    return (
+        html.escape(value, quote=False)
+        .replace("|", "&#124;")
+        .replace("\r", "&#13;")
+        .replace("\n", "&#10;")
+    )
 
 
 def _format_audit_value(value: object) -> str:
@@ -231,22 +270,31 @@ def write_audit(
     4. 7 个基础字段缺失时回落内置默认值（``unknown`` / 空串）；
     5. 固定字段顺序、不写时间戳 → 同一 ``doc`` 重跑字节一致。
     """
-    merged = _read_audit_table(path)
-    merged.update(_doc_audit_fields(doc))
+    audit_path = Path(path)
+    _require_distinct_files(
+        audit_path, Path(doc.pdf_path), *(Path(page.image_path) for page in doc.pages)
+    )
+
+    merged = _read_audit_table(audit_path)
     for key, default in AUDIT_DEFAULTS.items():
         merged.setdefault(key, default)
-    merged.update(fields)
+    updates = _doc_audit_fields(doc)
+    updates.update(fields)
+    merged.update(
+        {
+            _escape_audit_cell(key): _escape_audit_cell(_format_audit_value(value))
+            for key, value in updates.items()
+        }
+    )
 
-    ordered: dict[str, object] = {key: merged[key] for key in BASE_AUDIT_FIELDS}
+    ordered = {key: merged[key] for key in BASE_AUDIT_FIELDS}
     ordered.update(
         {key: merged[key] for key in sorted(merged) if key not in BASE_AUDIT_FIELDS}
     )
 
     lines = ["# 语料审计", "", "| 字段 | 值 |", "| --- | --- |"]
-    lines.extend(
-        f"| {key} | {_format_audit_value(value)} |" for key, value in ordered.items()
-    )
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.extend(f"| {key} | {value} |" for key, value in ordered.items())
+    audit_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,8 +308,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    doc = parse_pdf(args.pdf, args.out_dir)
-    write_audit(doc, args.audit)
+    try:
+        doc = _parse_pdf(args.pdf, Path(args.out_dir), Path(args.audit))
+        write_audit(doc, args.audit)
+    except _OutputPathConflict as exc:
+        parser.error(str(exc))
     print(
         f"parsed doc_id={doc.doc_id} page_count={doc.page_count} "
         f"out_dir={args.out_dir} audit={args.audit}"
