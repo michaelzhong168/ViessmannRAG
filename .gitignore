@@ -16,6 +16,9 @@ __pycache__/
 data/fts5.db
 data/pages/
 
+# ── 真实语料（只读输入；版权 / 体积原因不进仓）──
+data/raw/
+
 # ── 文档（在在线文档维护；本地工作副本不进仓）──
 /docs/
 /PROJECT.md
