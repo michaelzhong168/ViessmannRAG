@@ -1,43 +1,39 @@
 # ViessmannRAG
 
-> 菲斯曼壁挂炉说明书问答 —— 每个答案都能回到原文那一页（页码 + `bbox` + 逐字原文）。
+菲斯曼壁挂炉说明书问答项目。目标是让答案能回到原文那一页，并附页码、`bbox` 和逐字原文。
 
-**当前状态**：G01 完成 —— Python 3.11 环境 + 唯一模型入口 `tools/llm.py`，尚无业务代码。
+G01 提供唯一模型调用入口 `tools.llm.generate()`。包含 G02 的版本还可以将说明书 PDF 转为逐页原文、逐页 PNG 和语料审计表。
 
-## 仓库内容
+需求、验收规格和进度见[腾讯文档中的「项目主档」与规格](https://docs.qq.com/desktop/mydoc/folder/AdkPbToQjhNO)。仓库开发流程见 [AGENTS.md](AGENTS.md)。
 
-| 文件 | 用途 |
-|---|---|
-| `README.md` | 本文件 |
-| `AGENTS.md` | 开发约定：Reader → Coder → Reviewer，一关一分支一 PR |
-| `.github/PULL_REQUEST_TEMPLATE.md` | PR 模板：描述 / 关联 / 改动 / 测试 / 检查清单 |
-| `.python-version` | Python 3.11 |
-| `.gitignore` | 密钥、可重跑产物、本地文档副本均不进仓 |
+## 安装与无密钥测试
 
-## 文档
-
-需求规格、十四关验收断言、项目主档、计划与审计记录都在在线文档：
-<https://docs.qq.com/desktop/mydoc/folder/AdkPbToQjhNO>
-
-本仓库不存放这些文档。本地 `docs/` 只是 agent 读取用的工作副本，已被 git 忽略。
-
-## 运行
+使用 `.python-version` 指定的 Python 3.11。在仓库根目录运行：
 
 ```bash
-# 1. 环境（Python 3.11，见 .python-version）
 uv venv --python 3.11 .venv
-# uv 建的 venv 默认不带 pip，下面这条不要写成 `.venv/bin/python -m pip install`
 uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m pytest -q -rs
+```
 
-# 2. 配置（.env 不进仓）
-cp .env.example .env    # 然后填入真实 DASHSCOPE_API_KEY
+## PDF 夹具演示（G02）
 
-# 3. 测试（全离线 mock，不需要真实 KEY）
-.venv/bin/python -m pytest -q
+检出包含 `pipeline/parse.py` 和 `tests/fixtures/mini.pdf` 的版本后，按上节安装依赖，在仓库根目录运行：
 
-# 4. 手工冒烟（需要真实 KEY；模型名以百炼控制台为准）
+```bash
+demo_dir="$(mktemp -d)"
+.venv/bin/python -m pipeline.parse tests/fixtures/mini.pdf \
+  --out-dir "$demo_dir/pages" --audit "$demo_dir/语料审计.md"
+```
+
+命令输出 `doc_id=mini` 和 `page_count=2`，并在临时目录生成两张 PNG 和一份审计表。
+
+## 可选的模型冒烟
+
+首次配置时运行 `cp .env.example .env`。在 `.env` 中填写有效的 `DASHSCOPE_API_KEY` 和百炼控制台可用的 `LLM_MODEL`，然后运行：
+
+```bash
 .venv/bin/python -m tools.llm "你好"
 ```
 
-模型调用只有 `tools/llm.py:generate()` 一个入口；换厂商只改 `.env` 里的
-`LLM_BASE_URL` + `LLM_MODEL`，业务代码不动。
+模型入口使用 OpenAI 兼容接口。切换到项目允许的服务商时，配置对应的 `LLM_BASE_URL` 和 `LLM_MODEL`，并将该服务商的有效凭证填入 `DASHSCOPE_API_KEY`。
