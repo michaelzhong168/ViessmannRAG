@@ -26,7 +26,8 @@
 ```bash
 # 1. 环境（Python 3.11，见 .python-version）
 uv venv --python 3.11 .venv
-.venv/bin/python -m pip install -r requirements.txt   # 或 uv pip install -r requirements.txt
+# uv 建的 venv 默认不带 pip，下面这条不要写成 `.venv/bin/python -m pip install`
+uv pip install --python .venv/bin/python -r requirements.txt
 
 # 2. 配置（.env 不进仓）
 cp .env.example .env    # 然后填入真实 DASHSCOPE_API_KEY

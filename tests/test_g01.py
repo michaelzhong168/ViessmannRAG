@@ -1,4 +1,4 @@
-"""G01 验收测试：环境约定 + 唯一模型入口（A2 九条断言，逐条对应）。
+"""G01 验收测试：环境约定 + 唯一模型入口（对应规格 v1.2 FR-001…FR-007）。
 
 全部断言离线可跑：真实模型调用一律用 fake client 替身（只替换 ``_get_client``
 这个外部边界，不 mock ``generate`` 本身）。
@@ -13,6 +13,8 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -109,7 +111,9 @@ def test_env_example_declares_all_contract_keys():
     values = _parse_env_file(ROOT / ".env.example")
     missing = CONTRACT_ENV_KEYS - set(values)
     assert not missing, f".env.example 缺少契约键：{sorted(missing)}"
-    assert len(values) == len(CONTRACT_ENV_KEYS), f".env.example 键数量应为 14，实际 {len(values)}"
+    assert len(values) == len(CONTRACT_ENV_KEYS), (
+        f".env.example 键数量应为 {len(CONTRACT_ENV_KEYS)}（多/少都红），实际 {len(values)}"
+    )
 
 
 # ────────────────────────── A2#3 ──────────────────────────
@@ -139,6 +143,33 @@ def test_generate_returns_mocked_content(monkeypatch):
     assert messages[-1] == {"role": "user", "content": payload["prompt"]}
 
 
+# ────────────────────── FR-004 · base_url 来自 env ──────────────────────
+
+
+def test_client_uses_env_base_url_and_key(monkeypatch):
+    """换厂商只改 ``LLM_BASE_URL``：client 必须收到 env 里的端点（缺省才回落百炼）。"""
+    captured: dict = {}
+
+    def fake_openai(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(llm, "OpenAI", fake_openai)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", SECRET_PREFIX + "local-test")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.invalid/v1")
+
+    llm._get_client()
+
+    assert captured["base_url"] == "https://example.invalid/v1"
+    assert captured["api_key"] == SECRET_PREFIX + "local-test"
+
+    # 未配置 LLM_BASE_URL 时回落默认端点（不静默变成空串）
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    llm._get_client()
+    assert captured["base_url"] == llm.DEFAULT_BASE_URL
+
+
 # ────────────────────────── A2#5 ──────────────────────────
 
 
@@ -154,6 +185,17 @@ def test_generate_passes_contract_params(monkeypatch):
     assert kwargs["temperature"] == 0.1
     assert kwargs["max_tokens"] == 400
     assert kwargs["timeout"] == 10.0
+
+
+def test_timeout_follows_env_variable(monkeypatch):
+    """``timeout`` 必须来自 ``LLM_TIMEOUT_S``，不是恒定的缺省值。"""
+    client = _fake_client(monkeypatch)
+    monkeypatch.setenv("LLM_MODEL", "qwen3.7-plus")
+    monkeypatch.setenv("LLM_TIMEOUT_S", "3")
+
+    llm.generate("你好")
+
+    assert client.completions.calls[-1]["timeout"] == 3.0
 
 
 # ────────────────────────── A2#6 ──────────────────────────
@@ -183,10 +225,22 @@ def test_explicit_model_overrides_env(monkeypatch):
     assert client.completions.calls[-1]["model"] == "qwen3.7-max"
 
 
+# ─────────────────── FR-006 · 两者皆空必须报错（无默认值） ───────────────────
+
+
+def test_model_missing_everywhere_raises(monkeypatch):
+    """入参与 ``LLM_MODEL`` 都空时不得回落到任何默认型号。"""
+    _fake_client(monkeypatch)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    with pytest.raises(RuntimeError, match="LLM_MODEL"):
+        llm.generate("你好", model=None)
+
+
 # ────────────────────────── A2#8 ──────────────────────────
 
 
-def test_cli_without_api_key_exits_nonzero_with_hint(tmp_path):
+def test_cli_without_api_key_exits_1_with_hint(tmp_path):
     env = dict(os.environ)
     # 空串即可阻止 python-dotenv(override=False) 用仓库 .env 里的真实 KEY 覆盖
     env["DASHSCOPE_API_KEY"] = ""
@@ -204,9 +258,21 @@ def test_cli_without_api_key_exits_nonzero_with_hint(tmp_path):
     )
 
     output = proc.stdout + proc.stderr
-    assert proc.returncode != 0, "缺密钥必须以非零码退出"
+    assert proc.returncode == 1, f"缺密钥必须退出码 1（规格 FR-007），实际 {proc.returncode}：{output!r}"
+    assert len(output.strip().splitlines()) == 1, f"提示应为一行，实际输出：{output!r}"
     assert "请检查 DASHSCOPE_API_KEY" in output, f"缺提示文案，实际输出：{output!r}"
     assert "Traceback" not in output, f"不得抛未捕获 traceback，实际输出：{output!r}"
+
+    # 用法错误：不带参数 → 退出码 2（规格 §四 接口）
+    usage = subprocess.run(
+        [sys.executable, "-m", "tools.llm"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert usage.returncode == 2, f"用法错误必须退出码 2，实际 {usage.returncode}"
 
 
 # ────────────────────────── A2#9 ──────────────────────────
