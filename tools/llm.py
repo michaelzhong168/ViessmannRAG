@@ -16,7 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
 
-#: system prompt 单独成常量（自旧版 B2 契约保留，G01 测试断言其内容）
+#: system prompt 
 SYSTEM_PROMPT = (
     "你是菲斯曼壁挂炉说明书的问答助手。只依据用户提供的原文回答问题，"
     "不编造原文中没有的内容。"
