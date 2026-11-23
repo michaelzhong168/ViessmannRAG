@@ -12,7 +12,9 @@
 | 契约基线（EU schema / HTTP / citation / trace / 内核签名） | 在线文档「需求规格总纲」 |
 | 项目主档（进度看板、演进日志） | 在线文档「项目主档」 |
 | 审计与复核记录 | 在线文档「规格审计与复核」 |
-| 本地工作副本 | `docs/`（**已 gitignore，不入仓**） |
+| 本地工作副本 | `docs/spces/G01.md` … `G14.md`（14 关全量副本）+ `README.md`（总纲副本）（**已 gitignore，不入仓**） |
+
+**需求以线上文档为准**：`docs/spces/` 只是副本，线上改了要重新导出；本地改了由维护者手动上传回线上，agent 不直接写线上文档。
 
 **仓库只放：项目说明 + 代码 + 测试 + 工程配置。** 禁止把规格、计划、审计、笔记提交进 git；
 `docs/` 下的一切对 agent 可读，但不进版本库。
@@ -34,7 +36,7 @@
           实现计划              返工（≤2 轮）◄──── CHANGES_REQUESTED
 ```
 
-| 角色 | 产出（写进 PR 正文） | 禁止 | 通过条件 |
+| 角色 | 产出（写进本地 `docs/gNN/`，不进仓） | 禁止 | 通过条件 |
 |---|---|---|---|
 | **Reader** | 前置核验 + A2 断言逐条映射到测试函数 + 歧义清单 + 结论（READY / BLOCKED / NEED_DECISION） | 写实现代码、改规格、装依赖 | 前置清楚、断言无遗漏、结论 READY |
 | **Coder** | 文件清单 + **原始** pytest 输出 + 断言逐条状态 + 未解决项 + 是否需 CHANGE_REQUEST | 改测试放宽、编造前置数据 | 单关 + 全量回归全绿 |
@@ -68,17 +70,30 @@ git push -u origin feat/gNN-<slug>         # 推特性分支，不要推 main
 
 - **提交信息**：`feat(g06): 第一个 RAG 闭环`；修 bug `fix(gNN): …`；工程改动 `chore: …`。
 - **PR 标题**：`[GNN] <关卡主题>`；**base 分支必须是 `dev`**，不是 `main`。
-- **PR 正文必须自带三段产物**（计划 / 交付 / 评审），因为仓库不存这些文件 —— PR 是唯一留档。
+- **PR 正文按 `.github/PULL_REQUEST_TEMPLATE.md` 写**：描述 / 关联 Issue / 具体改动 / 测试说明 / 检查清单，**另加「风险」一节**。写清「代码改了什么、测了什么、有什么风险」，不复述规格断言、不放规格证明。
+- **计划 / 交付报告 / 评审报告留在本地 `docs/gNN/`**（不进仓），PR 只写结论与关键证据，不再要求三段产物全文。
 - **合并**：squash 到 `dev`，一关一条干净提交。
 - **发布**：`dev` → `main` 也走 PR（发布批次），由维护者操作。
 - **红线**：任何情况下不得 `git push origin main`；本地 pre-push hook 会直接拒绝。
+
+### GitHub 认证（gh CLI，否则每次开 PR 都会撞上）
+
+`gh` 默认把 token 存进 macOS Keychain，**非 GUI 进程（agent / 后台任务）读不到**，表现为 `gh auth status` 报 token invalid，而 `git push`（SSH）却是好的。所以统一用明文存储：
+
+```bash
+gh auth login --web --insecure-storage --git-protocol ssh   # 一次，之后长期有效
+gh auth status                                              # 必须看到 Logged in to github.com
+```
+
+- token 落在 `~/.config/gh/hosts.yml`（权限 600，仓库外）；**不要**写进 `.env` / 环境变量 / 代码。
+- 换机或 token 被撤销后重跑上面第一条即可；不要用不带 `--insecure-storage` 的登录方式，否则又回到 keychain。
 
 ## 4. 每关收工
 
 1. PR 合并、链接记录到在线文档「项目主档」的进度看板。
 2. 在线文档回填四件事：当前状态 → 进度与工时 → 文件树 `○`→`●` → 演进日志追加一行。
 3. 若发生契约变更：维护者改在线文档并升版本号，受影响的关卡规格同步改。
-4. A4 人工确认项（真机 / 真密钥 / 真 PDF）写进 PR 正文，留给真人；不阻塞合并，但要标注未验证。
+4. A4 人工确认项（真机 / 真密钥 / 真 PDF）写进 PR 的「测试说明」与「风险」，留给真人；不阻塞合并，但要标注未验证。
 
 ## 5. 命令速查
 
@@ -96,5 +111,5 @@ git diff --stat main...HEAD    # 本关改动面
 - Python **3.11**（`.python-version` 已固定；本机用 uv 装的 3.11.16，SQLite 3.53.1，`trigram` 已实测）。
 - Node ≥ 18 用于个别前端纯函数断言（G10 / G14）。
 - 依赖只加当关需要的，逐关追加进 `requirements.txt`。
-- **文档类产物一律不进仓**：`语料审计.md`、`验收报告.md`、`eval/report.md`、`eval/golden_manual.jsonl`（人写金标）、`notes/` 全部已在 `.gitignore`；需要留档的贴进 PR 正文或在线文档。
+- **文档类产物一律不进仓**：`语料审计.md`、`验收报告.md`、`eval/report.md`、`eval/golden_manual.jsonl`（人写金标）、`notes/` 全部已在 `.gitignore`；需要留档的贴进 PR 描述或在线文档。
 - 模型名以百炼控制台当前可用为准（人工确认项）。
