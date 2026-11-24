@@ -16,10 +16,17 @@ RouteStatus = Literal[
 ]
 
 _HAZARD = re.compile(
-    r"燃气|煤气|天然气|漏气|气体泄漏|焦糊|冒烟|起火|一氧化碳|触电|漏电|"
+    r"漏气|气体泄漏|(?:壁挂炉|锅炉)(?:发生|出现)?泄漏|焦糊|冒烟|起火|一氧化碳|触电|漏电|"
+    r"接气|改气|更换气源|换气源|气瓶|喷嘴|液化(?:石油)?气|"
     r"拆机|拆卸|拆开|拆除|打开外壳|点火|排烟|烟道|烟管|接线|布线|电气连接|电源线|导线|线束|端子|"
-    r"短接|旁路|(?:关闭|禁用|取消|停用|屏蔽|绕过).{0,8}保护|"
-    r"\b(?:gas|disassemble|dismantle|ignition|ignite|flue|wiring|wire)\b"
+    r"短接|旁路|(?:关闭|禁用|取消|停用|屏蔽|绕过).{0,8}(?:保护|联锁|安全装置)|"
+    r"\bboiler (?:is |has a )?leak(?:ing)?\b|"
+    r"\b(?:disassemble|dismantle|ignition|ignite|flue|wiring|wire|injector|nozzle)\b"
+)
+_GAS_WORD = re.compile(r"燃气|煤气|天然气|\bgas\b")
+_APPLIANCE_FUEL_PREFIX = re.compile(
+    r"(?:燃气|煤气|天然气)(?=\s*(?:壁挂炉|锅炉))"
+    r"|\bgas\b(?=(?:-fired)?\s+(?:wall[- ]mounted\s+)?boiler\b)"
 )
 _DISPLAY = r"(?:屏幕|显示屏|界面|菜单)(?:[上里中]?的?)"
 _STATUS_ITEM = (
@@ -68,6 +75,15 @@ class RouteResult:
 
 def _normalize(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
+
+
+def _has_hazard(text: str, *, allow_appliance_name: bool = False) -> bool:
+    if _HAZARD.search(text):
+        return True
+    # 只从燃料词判断中忽略设备名称内的修饰词，风险动作仍检查全文。
+    if allow_appliance_name:
+        text = _APPLIANCE_FUEL_PREFIX.sub("", text)
+    return _GAS_WORD.search(text) is not None
 
 
 def _split_codes(code_list: str) -> list[str]:
@@ -133,7 +149,7 @@ class QuestionRouter:
         if not query:
             raise ValueError("问句不能为空")
         # 只放行完整的界面查询句式，避免混合请求用一句状态查询绕过转人工。
-        if _HAZARD.search(query) and not _READ_ONLY_STATUS.fullmatch(query):
+        if _has_hazard(query, allow_appliance_name=True) and not _READ_ONLY_STATUS.fullmatch(query):
             return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE)
         if control_type is None or not control_type.strip():
             return RouteResult("missing_control_type", "请确认设备是旋钮式、按键式还是触控式。")
@@ -148,7 +164,7 @@ class QuestionRouter:
             return RouteResult("retrieve")
 
         matches = [entries.get(code, []) for code in codes]
-        if any(_HAZARD.search(_normalize(node.text)) for rows in matches for node in rows):
+        if any(_has_hazard(_normalize(node.text)) for rows in matches for node in rows):
             return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE, codes)
         if not all(matches):
             return RouteResult("fault_not_found", "当前操作类型的说明书缺少对应故障码，请核对报码。", codes)
