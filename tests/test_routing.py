@@ -58,7 +58,7 @@ def snapshot(tmp_path, monkeypatch):
             ("E10", "Note the reading."),
             ("E11", "Check gas wiring."),
             ("Fault code F12 (gas leak)", "Record the display."),
-            ("Fault code F13", "Contact service about the gas boiler."),
+            ("Fault code F13", "Gas boiler: note reading."),
         ]),
         ("旋钮式", [("Fault code F02", "Check the dial."), ("Fault code F70", "Check the dial.")]),
         ("按键式", [
@@ -80,7 +80,7 @@ def snapshot(tmp_path, monkeypatch):
     ("烟道系统信息在哪看", "按键式", "retrieve"),
     ("如何查看点火状态", "按键式", "retrieve"),
     ("如何查询显示屏上的燃气阀状态", None, "missing_control_type"),
-    ("怎么查看燃气阀位置", "按键式", "human_review"),
+    ("怎么查看燃气阀位置", "按键式", "retrieve"),
     ("怎么调燃气阀", "按键式", "human_review"),
     ("怎么检查接线", "按键式", "human_review"),
     ("闻到燃气味了，怎么查看屏幕上的燃气阀位置", "按键式", "human_review"),
@@ -92,6 +92,7 @@ def snapshot(tmp_path, monkeypatch):
     ("怎么打开暖气", "按键式", "retrieve"),
     ("菲斯曼燃气壁挂炉怎么打开暖气", "按键式", "retrieve"),
     ("菲斯曼燃气壁挂炉怎么打开暖气", None, "missing_control_type"),
+    ("家里刚安装的燃气壁挂炉怎么打开暖气", "按键式", "retrieve"),
     ("天然气锅炉怎么查看水压", "按键式", "retrieve"),
     ("How do I turn on heating on my gas-fired boiler?", "按键式", "retrieve"),
     ("燃气壁挂炉漏气了，怎么打开暖气", "按键式", "human_review"),
@@ -101,6 +102,12 @@ def snapshot(tmp_path, monkeypatch):
     ("燃气壁挂炉的喷嘴怎么换", "按键式", "human_review"),
     ("燃气壁挂炉怎么改成液化气", "按键式", "human_review"),
     ("燃气壁挂炉怎么关闭安全联锁", "按键式", "human_review"),
+    ("燃气壁挂炉闻到异味，还能打开暖气吗", "按键式", "human_review"),
+    ("如何在厨房安装燃气锅炉", "按键式", "human_review"),
+    ("燃气锅炉怎么安装", "按键式", "human_review"),
+    ("燃气壁挂炉怎么更换燃烧器", "按键式", "human_review"),
+    ("燃气壁挂炉的燃烧室怎么清理", "按键式", "human_review"),
+    ("How do I install a gas boiler?", "按键式", "human_review"),
     ("My gas boiler is leaking, can I turn on heating?", "按键式", "human_review"),
     ("容量 20 cc", "按键式", "retrieve"),
     ("怎么查看 06 bar 的设定", "按键式", "retrieve"),
@@ -114,7 +121,6 @@ def snapshot(tmp_path, monkeypatch):
     ("显示 E10", "按键式", "clarify_fault"),
     ("显示 E11", "按键式", "human_review"),
     ("显示 F12", "按键式", "human_review"),
-    ("显示 F13", "按键式", "human_review"),
     ("显示 E11、F99", "按键式", "human_review"),
 ])
 def test_pre_generation_routes(snapshot, question, control_type, expected):
@@ -144,6 +150,7 @@ def test_exact_lookup_returns_native_nodes_and_citations(snapshot):
         assert citation.quote == node.text
     assert router.route("F02", "旋钮式").citations[0].page_no == 2
     assert router.route("故障代码06", "按键式").fault_codes == ("06",)
+    assert router.route("F13", "按键式").citations[0].quote.endswith("Gas boiler: note reading.")
     assert router.route("CC 怎么办", "按键式").status == "fault_match"
     assert router.route("fault code F02, please help", "按键式").status == "fault_match"
     assert router.route("故障码 F02 和 06", "按键式").fault_codes == ("06", "F02")
