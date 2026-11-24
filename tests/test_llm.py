@@ -27,6 +27,7 @@ def provider(monkeypatch):
 
 
 def test_model_probe_without_credentials(monkeypatch, capsys):
+    """验证命令行探测能区分缺少凭证和缺少命令参数。"""
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     # 退出码区分凭证缺失和命令用法错误。
@@ -36,6 +37,7 @@ def test_model_probe_without_credentials(monkeypatch, capsys):
 
 
 def test_generate_uses_configured_provider_and_timeout(monkeypatch, provider):
+    """验证生成请求使用配置的服务地址、凭证、模型、超时和消息。"""
     request, client_config = provider
     monkeypatch.setenv("LLM_BASE_URL", "https://example.invalid/v1")
     monkeypatch.setenv("LLM_TIMEOUT_S", "3")
@@ -49,6 +51,7 @@ def test_generate_uses_configured_provider_and_timeout(monkeypatch, provider):
 
 
 def test_defaults_and_explicit_model_priority(monkeypatch, provider):
+    """验证缺省服务参数和显式模型优先于环境模型的规则。"""
     request, client_config = provider
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_TIMEOUT_S", raising=False)
@@ -61,6 +64,7 @@ def test_defaults_and_explicit_model_priority(monkeypatch, provider):
 
 
 def test_no_implicit_model(monkeypatch, provider):
+    """验证缺少模型配置时调用会报错。"""
     monkeypatch.delenv("LLM_MODEL", raising=False)
     with pytest.raises(RuntimeError, match="LLM_MODEL"):
         llm.generate("question")

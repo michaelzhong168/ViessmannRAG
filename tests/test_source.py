@@ -34,6 +34,7 @@ def source_files(tmp_path):
 
 
 def test_load_document_preserves_approved_pages_and_text(source_files):
+    """验证只收录核定物理页，并保留各页型号、原文和字符范围。"""
     pdf_path, scopes_path, _ = source_files
     document = load_document(pdf_path, scopes_path)
     assert isinstance(document, Document)
@@ -57,6 +58,7 @@ def test_load_document_preserves_approved_pages_and_text(source_files):
 
 
 def test_reloading_same_pdf_keeps_fingerprint_and_a_new_version_changes_it(source_files):
+    """验证同一 PDF 的指纹可复现，文件修订后指纹变化且文档 ID 保持稳定。"""
     pdf_path, scopes_path, _ = source_files
     initial = load_document(pdf_path, scopes_path)
     fingerprint = initial.metadata["pdf_version"]
@@ -89,6 +91,7 @@ def test_reloading_same_pdf_keeps_fingerprint_and_a_new_version_changes_it(sourc
     ({"scopes": [{"first_page": 1, "last_page": 1, "model_codes": []}]}, "非空"),
 ])
 def test_refuses_invalid_scopes(source_files, changes, error):
+    """验证加载器拒绝来源不符、页段无效或型号配置不合规的范围文件。"""
     pdf_path, scopes_path, scopes = source_files
     scopes_path.write_text(json.dumps(scopes | changes), encoding="utf-8")
     with pytest.raises(ValueError, match=error):
@@ -96,6 +99,7 @@ def test_refuses_invalid_scopes(source_files, changes, error):
 
 
 def test_cli_reports_source_without_printing_text(source_files, capsys):
+    """验证 CLI 输出包含空页信息的来源摘要，且输出中没有手册原文。"""
     pdf_path, scopes_path, _ = source_files
     assert main([str(pdf_path), "--scopes", str(scopes_path)]) == 0
     output = capsys.readouterr()
@@ -111,6 +115,7 @@ def test_cli_reports_source_without_printing_text(source_files, capsys):
 
 
 def test_cli_reports_a_malformed_pdf(source_files, capsys):
+    """验证损坏的 PDF 使 CLI 返回输入错误，并把错误提示写入标准错误。"""
     pdf_path, scopes_path, _ = source_files
     pdf_path.write_bytes(b"invalid PDF")
     assert main([str(pdf_path), "--scopes", str(scopes_path)]) == 2
