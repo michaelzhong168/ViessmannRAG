@@ -203,6 +203,7 @@ def _assign_chapters(
 
 def analyze_layout(
     pdf: pymupdf.Document, first_page: int = 1, last_page: int | None = None,
+    *, top_ratio: float = 0.08, bottom_ratio: float = 0.08,
 ) -> Layout:
     """提取同一核定页段的版面，保持物理页码和页图方向的坐标。"""
     last_page = len(pdf) if last_page is None else last_page
@@ -218,7 +219,7 @@ def analyze_layout(
     for number in range(first_page - 1, last_page):
         page = pdf[number]
         page_tables = _extract_tables(page)
-        page_blocks, page_removed = _extract_blocks(page, page_tables, 0.08, 0.08)
+        page_blocks, page_removed = _extract_blocks(page, page_tables, top_ratio, bottom_ratio)
         tables.extend(page_tables)
         blocks.extend(page_blocks)
         removed += page_removed
