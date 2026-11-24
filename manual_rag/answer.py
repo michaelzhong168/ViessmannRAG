@@ -20,12 +20,12 @@ _ANSWER_PROMPT = """你是菲斯曼壁挂炉说明书的问答助手。把用户
 疑似燃气泄漏时只提示不要开启设备或操作电器开关、先撤到室外安全地点再联系当地燃气公司抢修。
 即使片段有相关内容，也不要建议用户留在现场关阀、开窗或检查故障。
 菲斯曼设备服务电话是 400 650 8850，仅用于现场安全后的设备服务。
-用直接对应用户问题的证据回答，避免拼用不同操作场景的步骤。保留原文中影响步骤适用性的条件。
+用直接对应用户问题的证据回答，避免拼用不同操作场景的步骤。保留原文中影响步骤适用性的全部条件，包括必须同时出现的报码和图标。
 证据只覆盖部分步骤时说明缺失。按键名称或图标无法从文字确定时，说明需查引文对应原图；不要把孤立的斜杠或空白写成按键名称。
 勿在答案里输出页码，程序会补充原页引用。
 仅返回 JSON 对象，字段 answer 为中文回复，citations 为采用的片段编号数组，error_code 为 null 或
 safety_notice、missing_control_type、control_type_mismatch、clarify_fault、insufficient_evidence 之一。
-普通回答须选至少一个片段。风险提示、澄清和资料不足时可以不选片段。"""
+普通回答须选至少一个片段。风险提示的 citations 必须为空数组。澄清和资料不足时可以不选片段。"""
 _MODEL_CODES = {
     None, "safety_notice", "missing_control_type", "control_type_mismatch",
     "clarify_fault", "insufficient_evidence",
@@ -88,6 +88,9 @@ def _decode_answer(reply: str, nodes: list[TextNode]) -> AnswerResult:
             and isinstance(indices, list)
             and all(type(i) is int and 1 <= i <= len(nodes) for i in indices)
         ):
+            if code == "safety_notice":
+                # 说明书片段可能列出正文省略的现场处置步骤。
+                return AnswerResult(answer.strip(), error_code=code)
             if code is None and not indices:
                 return AnswerResult("当前回答缺少可核对的说明书依据。", error_code="insufficient_evidence")
             citations = []

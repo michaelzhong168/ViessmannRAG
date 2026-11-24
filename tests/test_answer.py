@@ -64,7 +64,7 @@ def query_service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("question", "device_type", "code", "citations"), [
-    ("  闻到燃气味，还能打开暖气吗？  ", None, "safety_notice", []),
+    ("  闻到燃气味，还能打开暖气吗？  ", None, "safety_notice", [1]),
     ("怎么打开暖气", None, "missing_control_type", []),
     ("怎么打开暖气", "触控式", "control_type_mismatch", []),
     ("屏幕显示 F02", "按键式", None, [1]),
@@ -89,7 +89,7 @@ def test_model_decides_all_question_outcomes(query_service, capsys, question, de
     assert payload["question"] == question
     assert payload["control_type"] == device_type
     assert {item["control_type"] for item in payload["excerpts"]} == {"按键式", "旋钮式"}
-    if citations:
+    if citations and code != "safety_notice":
         citation, = output["citations"]
         assert citation["doc_id"] == "manual"
         assert citation["page_no"] == 1
