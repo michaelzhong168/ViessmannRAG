@@ -89,3 +89,22 @@ for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
 ```
 
 默认返回至多 5 个 `NodeWithScore`，保留原始节点和相似度分数。指定类型没有匹配节点时返回空列表。
+
+## R01-05 风险与故障码路由
+
+重载索引后创建一次 `QuestionRouter`。它从当前快照的表格节点建立查询表，每次发布并加载新快照后创建新的路由实例。整个路由过程在本地运行。
+
+```python
+from manual_rag.index import load_index
+from manual_rag.routing import QuestionRouter
+
+router = QuestionRouter(load_index())
+result = router.route("屏幕显示 F02", "按键式")
+print(result.status, result.message)
+for citation in result.citations:
+    print(citation.doc_id, citation.page_no, citation.quote)
+```
+
+`retrieve` 表示可进入类型内检索。`fault_match` 返回匹配的原生节点和逐字引用。危险请求转人工，缺操作类型时询问类型，故障现象模糊或适用条目冲突时返回澄清提示。明确故障码在当前类型内查无证据时返回 `fault_not_found`。
+
+表格行可通过首列的故障码标签或表头识别。已有快照可继续识别行内标签，依赖表头识别的说明书可运行 `index` 更新快照。

@@ -13,7 +13,7 @@ from llama_index.core.schema import Document, NodeRelationship, RelatedNodeInfo,
 
 from manual_rag.source import CONTROL_TYPES
 
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 _HEADING_SIZE_RATIO = 1.15
 _HEADING_MAX_CHARS = 60
 _SECTION_INDENT_PT = 18  # 同列标题和正文可以有约两个汉字的缩进差。
@@ -35,6 +35,7 @@ class _Fragment:
     text: str
     bbox: pymupdf.Rect  # 和 _Line 使用同一页坐标系。
     kind: str
+    table_header: str = ""  # 同一线框表格首行的第一列。
 
 
 def _approved_pages(document: Document, page_count: int) -> dict[int, str]:
@@ -162,6 +163,7 @@ def _table_fragments(
 ) -> list[_Fragment]:
     fragments = []
     for table_no, table in enumerate(tables):
+        header = "\n".join(line.text for line in cell_lines.get((table_no, 0, 0), []))
         for row_no, row in enumerate(table):
             cells = []
             for col_no in range(len(row)):
@@ -173,7 +175,7 @@ def _table_fragments(
                 for cell in populated:
                     bbox |= cell.bbox
                 text = "\t".join(cell.text if cell is not None else "" for cell in cells)
-                fragments.append(_Fragment(text, bbox, "table_row"))
+                fragments.append(_Fragment(text, bbox, "table_row", header))
     return fragments
 
 
@@ -240,6 +242,8 @@ def build_nodes(document: Document, pdf_path: str | Path) -> list[TextNode]:
                     "control_type": control_type,
                     "kind": fragment.kind,
                 }
+                if fragment.table_header:
+                    metadata["table_header"] = fragment.table_header
                 identity = json.dumps(
                     [LAYOUT_VERSION, document.id_, ordinal, metadata, fragment.text],
                     sort_keys=True, ensure_ascii=False,
