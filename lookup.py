@@ -1,6 +1,7 @@
 """按故障码与型号做精确匹配，并核对对应的 EU 引文。"""
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from functools import lru_cache
@@ -11,6 +12,13 @@ from schema import EU
 
 DEFAULT_CODES_PATH = "data/codes.json"
 ACTION_LEVELS = frozenset({"SAFE", "CAUTION", "P0_DANGER"})
+_QUERY_TOKEN = re.compile(r"[0-9]*\.[0-9]+(?:\.[0-9]+)*|[A-Za-z0-9]+")
+_QUANTITY_BEFORE = re.compile(r"(?<![A-Za-z0-9.])(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)[ \t]*$")
+_STANDARD_SHORT_CODE = re.compile(r"[FE][0-9]{1,2}")
+_LABELED_CODE = re.compile(
+    r"(?:故障(?:代码|码)|错误(?:代码|码)|报码)[：: \t]*(?:为|是)?[：: \t]*"
+    r"([A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)"
+)
 
 
 def _normalized_key(code: str, model: str) -> tuple[str, str]:
@@ -67,16 +75,48 @@ def _load_default_codes(
     return load_codes(path)
 
 
+def _default_codes() -> Sequence[dict]:
+    path = Path(DEFAULT_CODES_PATH).resolve()
+    stat = path.stat()
+    version = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return _load_default_codes(path, version)
+
+
+def fault_codes_in_query(query: str) -> list[str]:
+    """识别明确故障码，其他两位短码只在 G05 表内确认。"""
+    explicit = {code.upper() for code in _LABELED_CODE.findall(query)}
+    candidates = set()
+    after_number = set()
+    for token in _QUERY_TOKEN.finditer(query):
+        code = token[0].upper()
+        if _STANDARD_SHORT_CODE.fullmatch(code):
+            explicit.add(code)
+        elif len(code) == 2 and code.isalnum():
+            quantity = _QUANTITY_BEFORE.search(query, 0, token.start()) if code.isalpha() else None
+            if quantity is None:
+                candidates.add(code)
+            else:
+                after_number.add((quantity[0].strip(), code))
+
+    if candidates - explicit or after_number:
+        try:
+            known = {row["code"].strip().upper() for row in _default_codes()}
+        except FileNotFoundError:
+            # 没有查表产物时，普通检索仍可独立运行。
+            known = set()
+        explicit.update(candidates & known)
+        # 20 cc 是单位写法。06 CC 的两项都在表内时，按两个故障码核验。
+        explicit.update(code for number, code in after_number if number in explicit and code in known)
+    return sorted(explicit)
+
+
 def lookup_code(code: str, model: str, codes: Sequence[dict] | None = None) -> dict | None:
     """按归一化双键查表，复用已加载快照的字典。普通行序列会临时建表。"""
     key = _normalized_key(code, model)
     if not all(key):
         return None
     if codes is None:
-        path = Path(DEFAULT_CODES_PATH).resolve()
-        stat = path.stat()
-        version = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-        codes = _load_default_codes(path, version)
+        codes = _default_codes()
     indexed = codes.index_by_key if isinstance(codes, _LoadedCodes) else _index_codes(codes)
     row = indexed.get(key)
     if row is None or _normalized_key(row["code"], row["model_code"]) != key:
