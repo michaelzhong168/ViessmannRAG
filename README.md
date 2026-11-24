@@ -1,43 +1,34 @@
 # ViessmannRAG
 
-> 菲斯曼壁挂炉说明书问答 —— 每个答案都能回到原文那一页（页码 + `bbox` + 逐字原文）。
+菲斯曼壁挂炉说明书问答项目。开发按[需求规格总纲](specs/semantic-rag.md)逐单元推进。当前单元 R01-01 负责从本地 PDF 加载 LlamaIndex `Document`。
 
-**当前状态**：G01 完成 —— Python 3.11 环境 + 唯一模型入口 `tools/llm.py`，尚无业务代码。
+## 安装与离线验证
 
-## 仓库内容
-
-| 文件 | 用途 |
-|---|---|
-| `README.md` | 本文件 |
-| `AGENTS.md` | 开发约定：Reader → Coder → Reviewer，一关一分支一 PR |
-| `.github/PULL_REQUEST_TEMPLATE.md` | PR 模板：描述 / 关联 / 改动 / 测试 / 检查清单 |
-| `.python-version` | Python 3.11 |
-| `.gitignore` | 密钥、可重跑产物、本地文档副本均不进仓 |
-
-## 文档
-
-需求规格、十四关验收断言、项目主档、计划与审计记录都在在线文档：
-<https://docs.qq.com/desktop/mydoc/folder/AdkPbToQjhNO>
-
-本仓库不存放这些文档。本地 `docs/` 只是 agent 读取用的工作副本，已被 git 忽略。
-
-## 运行
+使用 `.python-version` 指定的 Python。在仓库根目录运行。
 
 ```bash
-# 1. 环境（Python 3.11，见 .python-version）
 uv venv --python 3.11 .venv
-# uv 建的 venv 默认不带 pip，下面这条不要写成 `.venv/bin/python -m pip install`
 uv pip install --python .venv/bin/python -r requirements.txt
-
-# 2. 配置（.env 不进仓）
-cp .env.example .env    # 然后填入真实 DASHSCOPE_API_KEY
-
-# 3. 测试（全离线 mock，不需要真实 KEY）
-.venv/bin/python -m pytest -q
-
-# 4. 手工冒烟（需要真实 KEY；模型名以百炼控制台为准）
-.venv/bin/python -m tools.llm "你好"
+env -u DASHSCOPE_API_KEY PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest -q -rs
 ```
 
-模型调用只有 `tools/llm.py:generate()` 一个入口；换厂商只改 `.env` 里的
-`LLM_BASE_URL` + `LLM_MODEL`，业务代码不动。
+## R01-01 加载说明书
+
+将 PDF 放在 `data/raw/`。对照原件核定型号和物理页段，在本地写入范围文件。物理页从 1 开始，含两端。下例对应 `manual.pdf`。
+
+```json
+{
+  "doc_id": "manual",
+  "scopes": [
+    {"first_page": 1, "last_page": 48, "model_codes": ["L1P20-A1JF", "L1P24-A1JF"]}
+  ]
+}
+```
+
+```bash
+.venv/bin/python -m manual_rag.source data/raw/manual.pdf --scopes data/raw/model-scopes.json
+```
+
+命令输出文件指纹、总页数、核定物理页、型号和无文本的核定页。加载器在内存中保留原文及每页字符范围，供下一单元创建可追溯的 `TextNode`。本单元全程在本地执行，无模型调用。
+
+原始资料、配置密钥和评测记录留在本地。

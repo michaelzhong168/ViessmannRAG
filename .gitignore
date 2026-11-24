@@ -1,9 +1,10 @@
-# ── 密钥（硬禁止进仓）──
+# 密钥和本地资料
 .env
 .env.local
 *.pem
+/data/
 
-# ── Python ──
+# 开发环境
 .venv/
 venv/
 __pycache__/
@@ -11,24 +12,15 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.DS_Store
+*.log
 
-# ── 可重跑生成的产物（不进仓，靠 pipeline/ 重建）──
-data/fts5.db
-data/pages/
-
-# ── 文档（在在线文档维护；本地工作副本不进仓）──
+# 本地交接材料、评测记录与金标
 /docs/
-/PROJECT.md
 /notes/
+/PROJECT.md
 /*.local.md
-
-# ── 文档类产物（报告 / 审计 / 评测输出，同样不进仓）──
 /语料审计.md
 /验收报告.md
 /eval/report.md
 /eval/golden_manual.jsonl
-
-# ── 临时 ──
-.DS_Store
-*.log
-notes/scratch/
