@@ -21,6 +21,15 @@ _HAZARD = re.compile(
     r"短接|旁路|(?:关闭|禁用|取消|停用|屏蔽|绕过).{0,8}保护|"
     r"\b(?:gas|disassemble|dismantle|ignition|ignite|flue|wiring|wire)\b"
 )
+_DISPLAY = r"(?:屏幕|显示屏|界面|菜单)(?:[上里中]?的?)"
+_STATUS_ITEM = (
+    rf"(?:{_DISPLAY})?(?:燃气阀(?:开关)?状态|点火状态|烟道(?:系统)?(?:信息|状态))"
+    rf"|{_DISPLAY}燃气阀位置"
+)
+_READ_ONLY_STATUS = re.compile(
+    rf"(?:请问\s*)?(?:(?:怎么|如何|在哪(?:里)?)\s*(?:查看|查询|看)\s*(?:{_STATUS_ITEM})"
+    rf"|(?:{_STATUS_ITEM})\s*(?:怎么|如何|在哪(?:里)?)\s*(?:查看|查询|看))[?。.!！]*"
+)
 _CODE_LABEL = r"(?:故障\s*(?:代\s*码|码)|错误\s*(?:代码|码)|报码|fault\s+codes?)"
 _CODE = r"[a-z0-9]+(?:[.-][a-z0-9]+)*"
 _CODE_SEPARATOR = r"\s*(?:[、,/;]|或(?:者)?|以及|和|及|\b(?:and|or)\b)\s*"
@@ -123,7 +132,8 @@ class QuestionRouter:
         query = _normalize(question).strip()
         if not query:
             raise ValueError("问句不能为空")
-        if _HAZARD.search(query):
+        # 只放行完整的界面查询句式，避免混合请求用一句状态查询绕过转人工。
+        if _HAZARD.search(query) and not _READ_ONLY_STATUS.fullmatch(query):
             return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE)
         if control_type is None or not control_type.strip():
             return RouteResult("missing_control_type", "请确认设备是旋钮式、按键式还是触控式。")
