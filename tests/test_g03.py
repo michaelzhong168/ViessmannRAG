@@ -214,3 +214,79 @@ def test_cli_updates_audit(pdf, fault_table, chapters, tables, tmp_path, monkeyp
     before = (output.read_bytes(), audit.read_bytes())
     run()
     assert (output.read_bytes(), audit.read_bytes()) == before
+
+
+def test_title_detection_preserves_body_with_multiple_font_sizes(tmp_path):
+    path = tmp_path / "mixed-fonts.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        for y, text, size in (
+            (105, "x", 3),
+            (150, "Service Guide", 24),
+            (220, "Operation", 18),
+            (280, "This paragraph explains the operating modes and normal conditions.", 10),
+            (345, "This note is printed larger. The sentence remains body text.", 14),
+            (410, "Pressure 0.15 bar", 10),
+        ):
+            page.insert_text((50, y), text, fontsize=size)
+        pdf.save(path)
+
+    layout = analyze_layout(parse_pdf(path, tmp_path / "pages"))
+    assert [(heading.text, heading.level) for heading in layout.headings] == [
+        ("Service Guide", 1), ("Operation", 2),
+    ]
+    body = {block.text: block for block in layout.body_blocks}
+    assert set(body) == {
+        "x", "This paragraph explains the operating modes and normal conditions.",
+        "This note is printed larger. The sentence remains body text.", "Pressure 0.15 bar",
+    }
+    note = body["This note is printed larger. The sentence remains body text."]
+    assert note.chapter == "Operation"
+    assert note.page_no == 1
+    with pymupdf.open(path) as pdf:
+        block = next(block for block in pdf[0].get_text("blocks") if block[4].startswith(note.text))
+    assert note.bbox == pytest.approx(block[:4])
+
+
+def test_bookmark_recovers_body_sized_heading_on_its_page(tmp_path):
+    path = tmp_path / "bookmark.pdf"
+    with pymupdf.open() as pdf:
+        for _ in range(2):
+            page = pdf.new_page()
+            page.insert_text((50, 120), "Operation", fontsize=10)
+            page.insert_text((50, 210), "The normal operating instructions go here.", fontsize=10)
+        pdf.set_toc([[1, "Operation", 1]])
+        pdf.save(path)
+
+    layout = analyze_layout(parse_pdf(path, tmp_path / "pages"))
+    assert [(heading.page_no, heading.text) for heading in layout.headings] == [(1, "Operation")]
+    assert [block.page_no for block in layout.body_blocks if block.text == "Operation"] == [2]
+
+
+def test_partial_bookmarks_keep_unlisted_headings_on_the_same_page(tmp_path):
+    path = tmp_path / "partial-bookmarks.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        for y, text, size in (
+            (110, "Service Guide", 24),
+            (180, "Operation", 18),
+            (230, "Read the operating instructions before use.", 10),
+            (270, "1. Press OK", 15),
+            (310, "Maintenance", 18),
+            (360, "The maintenance instructions are in this section.", 10),
+            (405, "Check the display. The indicator", 15),
+        ):
+            page.insert_text((50, y), text, fontsize=size)
+        pdf.set_toc([[1, "Service Guide", 1]])
+        pdf.save(path)
+
+    layout = analyze_layout(parse_pdf(path, tmp_path / "pages"))
+    assert [(heading.text, heading.level) for heading in layout.headings] == [
+        ("Service Guide", 1), ("Operation", 2), ("Maintenance", 2),
+    ]
+    assert {block.text: block.chapter for block in layout.body_blocks} == {
+        "Read the operating instructions before use.": "Operation",
+        "1. Press OK": "Operation",
+        "The maintenance instructions are in this section.": "Maintenance",
+        "Check the display. The indicator": "Maintenance",
+    }

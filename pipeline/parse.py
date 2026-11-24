@@ -37,12 +37,14 @@ BASE_AUDIT_FIELDS = (
     "model_codes_detected",
 )
 
-#: 总纲 §2.11 规定的 G03 和 G04 扩展字段顺序。
-LAYOUT_EU_AUDIT_FIELDS = (
+#: 总纲 §2.11 规定的 G03–G05 扩展字段顺序。
+EXTENDED_AUDIT_FIELDS = (
     "chapter_count",
     "table_count",
     "eu_count",
     "cross_chapter_eu_count",
+    "code_count",
+    "quote_verify_rate",
 )
 
 #: 非 doc 派生字段的 G02 默认值；下游未传且旧报告没有时才使用。
@@ -309,29 +311,30 @@ def _format_audit_value(value: object) -> str:
 
 
 def write_audit(
-    doc: Document, path: str | Path = "语料审计.md", **fields: object
+    doc: Document | None, path: str | Path = "语料审计.md", **fields: object
 ) -> None:
     """生成 / 重写 ``语料审计.md``（全项目唯一生成者）。
 
     合并策略（计划 §6.c）：
 
-    1. 由 ``doc`` 派生的字段每次重算，覆盖旧报告中的同名值；
+    1. 传入 ``doc`` 时重算其派生字段，否则保留上游报告的 PDF 元数据；
     2. ``**fields`` 显式传入的键覆盖一切（下游 G03/G04/G05 只许调用本函数）；
     3. 旧报告里的其它字段（如下游追加的 ``chapter_count``）保留；
     4. 7 个基础字段缺失时回落内置默认值（``unknown`` / 空串）；
     5. 固定字段顺序、不写时间戳 → 同一 ``doc`` 重跑字节一致。
     """
     audit_path = Path(path)
-    _require_distinct_files(
-        audit_path,
-        doc._path_base / doc.pdf_path,
-        *(doc._path_base / page.image_path for page in doc.pages),
-    )
+    if doc is not None:
+        _require_distinct_files(
+            audit_path,
+            doc._path_base / doc.pdf_path,
+            *(doc._path_base / page.image_path for page in doc.pages),
+        )
 
     merged = _read_audit_table(audit_path)
     for key, default in AUDIT_DEFAULTS.items():
         merged.setdefault(key, default)
-    updates = _doc_audit_fields(doc)
+    updates = _doc_audit_fields(doc) if doc is not None else {}
     updates.update(fields)
     merged.update(
         {
@@ -342,11 +345,11 @@ def write_audit(
 
     ordered = {
         key: merged[key]
-        for key in (*BASE_AUDIT_FIELDS, *LAYOUT_EU_AUDIT_FIELDS)
+        for key in (*BASE_AUDIT_FIELDS, *EXTENDED_AUDIT_FIELDS)
         if key in merged
     }
     ordered.update(
-        {key: merged[key] for key in sorted(merged) if key not in BASE_AUDIT_FIELDS}
+        {key: merged[key] for key in sorted(merged) if key not in ordered}
     )
 
     lines = ["# 语料审计", "", "| 字段 | 值 |", "| --- | --- |"]

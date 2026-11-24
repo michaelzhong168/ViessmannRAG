@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +23,11 @@ from pipeline.parse import (
 
 UNSECTIONED = "(未分章)"
 DEFAULT_LAYOUT_PATH = "data/layout.json"
+HEADING_SIZE_RATIO = 1.15
+HEADING_MAX_CHARS = 60
+HEADING_MAX_LINES = 2
+BODY_SIZE_MIN_SHARE = 0.25
+BODY_TEXT_MARKER = re.compile(r"^(?:[■●▪•]|[0-9]+(?:[、)]|[.．](?!\d)))|[。！？；]|[.!?]\s")
 
 
 @dataclass
@@ -146,12 +153,49 @@ def _extract_blocks(
     return blocks, removed
 
 
+def _heading_text_key(text: str) -> str:
+    return "".join(text.split())
+
+
+def _heading_candidates(blocks: list[Block], bookmarks: set[tuple[int, str]]) -> set[int]:
+    confirmed = {
+        id(block) for block in blocks
+        if (block.page_no, _heading_text_key(block.text)) in bookmarks
+    }
+    body_weights: Counter[float] = Counter()
+    for block in blocks:
+        if id(block) not in confirmed:
+            body_weights[round(block.font_size, 1)] += len(_heading_text_key(block.text))
+    if not body_weights:
+        return confirmed
+    # 取有足够文字的较小字号，避免零散小字或短文档里的大标题主导基准。
+    weight_floor = max(body_weights.values()) * BODY_SIZE_MIN_SHARE
+    body_size = min(size for size, weight in body_weights.items() if weight >= weight_floor)
+
+    # 同页书签能确定标题，目录没列出的块按字号和文本形态继续判断。
+    for block in blocks:
+        text = block.text.strip()
+        if (
+            id(block) not in confirmed
+            and round(block.font_size, 1) >= body_size * HEADING_SIZE_RATIO
+            and len(text) <= HEADING_MAX_CHARS
+            and len(text.splitlines()) <= HEADING_MAX_LINES
+            and not BODY_TEXT_MARKER.search(text)
+            and not text.endswith((".", "!", "?", ";", ":", "："))
+        ):
+            confirmed.add(id(block))
+    return confirmed
+
+
 def _assign_chapters(
-    blocks: list[Block], tables: list[Table], removed: int
+    blocks: list[Block], tables: list[Table], removed: int, bookmarks: set[tuple[int, str]]
 ) -> Layout:
-    sizes = sorted({round(block.font_size, 1) for block in blocks}, reverse=True)
-    # 以全文最小字号作为正文基准，其余字号按降序分级。
-    levels = {size: min(level, 3) for level, size in enumerate(sizes[:-1], start=1)}
+    candidates = _heading_candidates(blocks, bookmarks)
+    sizes = sorted(
+        {round(block.font_size, 1) for block in blocks if id(block) in candidates},
+        reverse=True,
+    )
+    levels = {size: min(level, 3) for level, size in enumerate(sizes, start=1)}
     layout = Layout([], [], [], removed)
     chapter = UNSECTIONED
     for item in sorted([*blocks, *tables], key=_layout_order):
@@ -159,12 +203,12 @@ def _assign_chapters(
             item.chapter = chapter
             layout.tables.append(item)
             continue
-        level = levels.get(round(item.font_size, 1))
-        if level is None:
+        if id(item) not in candidates:
             item.chapter = chapter
             layout.body_blocks.append(item)
         else:
             chapter = item.text
+            level = levels[round(item.font_size, 1)]
             layout.headings.append(
                 Heading(item.text, level, item.page_no, item.bbox, item.font_size)
             )
@@ -179,6 +223,9 @@ def analyze_layout(
     tables: list[Table] = []
     removed = 0
     with pymupdf.open(doc.pdf_path) as pdf:
+        bookmarks = {
+            (page_no, _heading_text_key(title)) for _, title, page_no in pdf.get_toc()
+        }
         for page in pdf:
             page_tables = _extract_tables(page)
             page_blocks, page_removed = _extract_blocks(
@@ -187,7 +234,7 @@ def analyze_layout(
             blocks.extend(page_blocks)
             tables.extend(page_tables)
             removed += page_removed
-    return _assign_chapters(blocks, tables, removed)
+    return _assign_chapters(blocks, tables, removed, bookmarks)
 
 
 def write_layout(layout: Layout, path: str | Path = DEFAULT_LAYOUT_PATH) -> None:
