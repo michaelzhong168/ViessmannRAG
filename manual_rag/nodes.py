@@ -13,7 +13,7 @@ from llama_index.core.schema import Document, NodeRelationship, RelatedNodeInfo,
 
 from manual_rag.source import CONTROL_TYPES
 
-_LAYOUT_VERSION = 1
+LAYOUT_VERSION = 1
 _HEADING_SIZE_RATIO = 1.15
 _HEADING_MAX_CHARS = 60
 _SECTION_INDENT_PT = 18  # 同列标题和正文可以有约两个汉字的缩进差。
@@ -241,7 +241,7 @@ def build_nodes(document: Document, pdf_path: str | Path) -> list[TextNode]:
                     "kind": fragment.kind,
                 }
                 identity = json.dumps(
-                    [_LAYOUT_VERSION, document.id_, ordinal, metadata, fragment.text],
+                    [LAYOUT_VERSION, document.id_, ordinal, metadata, fragment.text],
                     sort_keys=True, ensure_ascii=False,
                 )
                 node_id = sha256(identity.encode("utf-8")).hexdigest()
