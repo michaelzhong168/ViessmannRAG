@@ -74,3 +74,18 @@ print(len(index.index_struct.nodes_dict))
 ```
 
 重载读取本地快照，无需联网或提供 API 密钥。若配置的 `EMBED_MODEL` 与快照不同，使用目标模型重新运行建库命令。
+
+## R01-04 类型内检索
+
+使用 R01-03 保存的快照，并沿用建库时的 `EMBED_MODEL`。将原始问句和操作类型传给检索入口。问句通过百炼生成向量，LlamaIndex 在指定操作类型内选取最相似的节点。
+
+```python
+from manual_rag.index import load_index
+from manual_rag.retrieval import retrieve_nodes
+
+index = load_index()
+for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
+    print(result.score, result.node.metadata["page_no"], result.node.text)
+```
+
+默认返回至多 5 个 `NodeWithScore`，保留原始节点和相似度分数。指定类型没有匹配节点时返回空列表。
