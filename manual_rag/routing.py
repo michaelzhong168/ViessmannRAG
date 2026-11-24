@@ -1,6 +1,5 @@
 """在问答生成前判定风险、核对操作类型并精确查询故障表格。"""
 
-import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Literal
@@ -8,6 +7,8 @@ from typing import Literal
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import TextNode
 
+from manual_rag.fault_codes import codes_in_question, codes_in_table_row
+from manual_rag.risk import requires_human_review
 from manual_rag.source import CONTROL_TYPES
 
 RouteStatus = Literal[
@@ -15,34 +16,7 @@ RouteStatus = Literal[
     "control_type_mismatch", "clarify_fault", "fault_not_found",
 ]
 
-# 风险根据现象或操作判断，设备名称和部件名称本身不触发。
-_HAZARDOUS_PART = r"(?:燃气阀|燃气管|燃气压力|燃烧器|燃烧室|喷嘴|点火电极|烟道|烟管|电源线|保护|联锁|安全装置)"
-_SERVICE_ACTION = r"(?:调[节高低]?|维修|检修|清[理洗]|更?换|拆装|关闭|禁用|取消|停用|屏蔽|绕过)"
-_HAZARD = re.compile(
-    r"漏气|气体泄漏|(?:锅炉|壁挂炉)(?:发生|出现)?泄漏|(?:燃气|煤气|天然气)泄漏|"
-    r"燃气味|煤气味|天然气味|焦糊|异味|臭鸡蛋味|冒烟|起火|一氧化碳|触电|漏电|"
-    r"接气|改气|换气源|拆机|拆卸|拆开|拆除|打开外壳|接线|布线|短接|旁路|"
-    r"(?:手动|强制|打火机|火柴)[^。！？.!?]{0,18}点火|"
-    r"(?:改|换)[^，。！？,.!?]{0,4}液化(?:石油)?气|"
-    r"(?:怎么|如何|怎样|自行|自己)[^，。！？,.!?]{0,10}(?:安装|改装|移机)[^，。！？,.!?]{0,12}(?:壁挂炉|锅炉)|"
-    r"(?:壁挂炉|锅炉)[^，。！？,.!?]{0,8}(?:怎么|如何|怎样|自行|自己)[^，。！？,.!?]{0,8}(?:安装|改装|移机)|"
-    rf"{_SERVICE_ACTION}[^。！？.!?]{{0,10}}{_HAZARDOUS_PART}|{_HAZARDOUS_PART}[^。！？.!?]{{0,12}}{_SERVICE_ACTION}|"
-    r"\bgas (?:leak|wiring)\b|\bboiler (?:is |has a )?leak(?:ing)?\b|"
-    r"\b(?:disassemble|dismantle|rewire)\b|"
-    r"\b(?:install|adjust|replace|repair|clean)\s+(?:(?:a|the|my|gas|gas-fired)\s+){0,3}"
-    r"(?:boiler|gas valve|burner|combustion chamber)\b"
-)
-_CODE_LABEL = r"(?:故障\s*(?:代\s*码|码)|错误\s*(?:代码|码)|报码|fault\s+codes?)"
-_CODE = r"[a-z0-9]+(?:[.-][a-z0-9]+)*"
-_CODE_SEPARATOR = r"\s*(?:[、,/;]|或(?:者)?|以及|和|及|\b(?:and|or)\b)\s*"
-_CODE_LIST = rf"{_CODE}(?:{_CODE_SEPARATOR}{_CODE})*"
-_LABELED_CODES = re.compile(rf"{_CODE_LABEL}\s*[:：]?\s*(?:为|是)?\s*({_CODE_LIST})")
-_BARE_CODE_LIST = re.compile(_CODE_LIST)
-_TOKEN = re.compile(_CODE)
-_STANDARD_CODE = re.compile(r"[fe][0-9]+(?:[.-][a-z0-9]+)*")
-_DISPLAY_CUE = re.compile(r"(?:显示|报|闪烁|跳出|提示|代码|code)\s*[:：]?\s*$")
-_QUANTITY_BEFORE = re.compile(r"(?<![a-z0-9.])(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*$")
-_SYMPTOM = re.compile(r"故障|报错|报警|不工作|不热|不启动|没热水")
+_FAULT_SYMPTOMS = ("故障", "报错", "报警", "不工作", "不热", "不启动", "没热水")
 _HUMAN_REVIEW_MESSAGE = "请联系菲斯曼售后或具备资质的专业人员处理。"
 
 
@@ -72,44 +46,6 @@ def _normalize(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
 
 
-def _split_codes(code_list: str) -> list[str]:
-    return [code.upper() for code in re.split(_CODE_SEPARATOR, code_list)]
-
-
-def _row_codes(first_cell: str, context: str) -> list[str]:
-    cell = _normalize(first_cell).strip()
-    labeled = _LABELED_CODES.search(cell)
-    if labeled:
-        return _split_codes(labeled[1])
-    if re.search(_CODE_LABEL, _normalize(context)) and _BARE_CODE_LIST.fullmatch(cell):
-        return _split_codes(cell)
-    return []
-
-
-def _question_codes(question: str, known_codes: set[str]) -> tuple[str, ...]:
-    codes = set()
-    for labeled in _LABELED_CODES.finditer(question):
-        first, *following = _split_codes(labeled[1])
-        codes.add(first)
-        codes.update(code for code in following if code in known_codes or any(c.isdigit() for c in code))
-    for token in _TOKEN.finditer(question):
-        value = token[0]
-        code = value.upper()
-        if _STANDARD_CODE.fullmatch(value):
-            codes.add(code)
-        elif code in known_codes:
-            # 纯数字可能是读数，纯字母紧跟数字时可能是单位。
-            if (
-                (not value.isdigit() and not value.isalpha())
-                or (value.isalpha() and not _QUANTITY_BEFORE.search(question, 0, token.start()))
-                or question == value
-                or _DISPLAY_CUE.search(question[:token.start()])
-                or question[token.end():].lstrip().startswith("闪烁")
-            ):
-                codes.add(code)
-    return tuple(sorted(codes))
-
-
 class QuestionRouter:
     """从已加载的一个索引建立路由；重载快照后应创建新的路由实例。"""
 
@@ -125,7 +61,7 @@ class QuestionRouter:
             first_cell, separator, remedy = node.text.partition("\t")
             if separator and remedy.strip() and node.source_node is not None:
                 context = node.metadata.get("table_header") or node.metadata.get("section", "")
-                for code in dict.fromkeys(_row_codes(first_cell, context)):
+                for code in dict.fromkeys(codes_in_table_row(_normalize(first_cell), _normalize(context))):
                     entries.setdefault(code, []).append(node)
         self._known_codes = {code for entries in self._table.values() for code in entries}
 
@@ -134,7 +70,7 @@ class QuestionRouter:
         query = _normalize(question).strip()
         if not query:
             raise ValueError("问句不能为空")
-        if _HAZARD.search(query):
+        if requires_human_review(query):
             return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE)
         if control_type is None or not control_type.strip():
             return RouteResult("missing_control_type", "请确认设备是旋钮式、按键式还是触控式。")
@@ -142,14 +78,14 @@ class QuestionRouter:
         if entries is None:
             return RouteResult("control_type_mismatch", "当前说明书不适用于该操作类型，请核对设备类型。")
 
-        codes = _question_codes(query, self._known_codes)
+        codes = codes_in_question(query, self._known_codes)
         if not codes:
-            if _SYMPTOM.search(query):
+            if any(symptom in query for symptom in _FAULT_SYMPTOMS):
                 return RouteResult("clarify_fault", "请描述具体现象，并提供屏幕上的故障码（如有）。")
             return RouteResult("retrieve")
 
         matches = [entries.get(code, []) for code in codes]
-        if any(_HAZARD.search(_normalize(node.text)) for rows in matches for node in rows):
+        if any(requires_human_review(_normalize(node.text)) for rows in matches for node in rows):
             return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE, codes)
         if not all(matches):
             return RouteResult("fault_not_found", "当前操作类型的说明书缺少对应故障码，请核对报码。", codes)
