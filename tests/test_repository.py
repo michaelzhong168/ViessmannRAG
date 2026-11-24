@@ -17,7 +17,7 @@ def test_local_inputs_and_credentials_are_ignored():
     assert set(protected.splitlines()) == {".env", "data/raw/manual.pdf", "data/semantic/index.json"}
     template = dict(line.split("=", 1) for line in (ROOT / ".env.example").read_text().splitlines()
                     if line.strip() and not line.startswith("#"))
-    assert set(template) == {"DASHSCOPE_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_TIMEOUT_S"}
+    assert set(template) == {"DASHSCOPE_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_TIMEOUT_S", "EMBED_MODEL"}
     assert template["DASHSCOPE_API_KEY"] == ""
 
 
