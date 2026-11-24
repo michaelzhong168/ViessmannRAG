@@ -3,6 +3,7 @@
 import json
 import re
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -15,6 +16,7 @@ from manual_rag.source import CONTROL_TYPES
 _LAYOUT_VERSION = 1
 _HEADING_SIZE_RATIO = 1.15
 _HEADING_MAX_CHARS = 60
+_SECTION_INDENT_PT = 18  # 同列标题和正文可以有约两个汉字的缩进差。
 _STEP_START = re.compile(r"^\s*(?:[0-9]{1,3}[.．、)）](?![0-9])|[（(][0-9]{1,3}[）)]|[①-⑳])")
 
 _CellPosition = tuple[int, int, int]  # 表格、行、列的索引，均从 0 开始。
@@ -175,6 +177,29 @@ def _table_fragments(
     return fragments
 
 
+def _sections(fragments: list[_Fragment]) -> Iterator[tuple[_Fragment, str]]:
+    headings: list[_Fragment] = []
+    for fragment in sorted(fragments, key=lambda item: (item.bbox.y0, item.bbox.x0)):
+        left = fragment.bbox.x0
+        if fragment.kind == "heading":
+            # 新标题只替换同列标题，通栏标题可以同时覆盖多列。
+            right = max(left + _SECTION_INDENT_PT, fragment.bbox.x1)
+            headings = [
+                heading for heading in headings
+                if not left - _SECTION_INDENT_PT <= heading.bbox.x0 <= right
+            ]
+            headings.append(fragment)
+            yield fragment, fragment.text
+            continue
+        # 前置标题中，使用最靠近正文左缘的列。右侧栏的标题不会覆盖左侧正文。
+        heading = max(
+            (heading for heading in headings if heading.bbox.x0 <= left + _SECTION_INDENT_PT),
+            key=lambda heading: heading.bbox.x0,
+            default=None,
+        )
+        yield fragment, heading.text if heading is not None else ""
+
+
 def build_nodes(document: Document, pdf_path: str | Path) -> list[TextNode]:
     """逐核定页生成 Node，坐标为未旋转的 PyMuPDF 页坐标，单位 pt。
 
@@ -206,10 +231,7 @@ def build_nodes(document: Document, pdf_path: str | Path) -> list[TextNode]:
             fragments = _text_fragments(blocks, bookmarks.get(page_no, set()))
             fragments.extend(_table_fragments(tables, cell_lines))
             # 仅使用当前物理页的标题，避免跨页传播章节和操作类型。
-            section = ""
-            for ordinal, fragment in enumerate(sorted(fragments, key=lambda item: (item.bbox.y0, item.bbox.x0))):
-                if fragment.kind == "heading":
-                    section = fragment.text
+            for ordinal, (fragment, section) in enumerate(_sections(fragments)):
                 metadata = {
                     **provenance,
                     "page_no": page_no,

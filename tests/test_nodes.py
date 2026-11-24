@@ -152,3 +152,32 @@ def test_rotated_page_coordinates_use_unrotated_pdf_space(manual):
     assert [(node.text, node.metadata["bbox"]) for node in rotated] == [
         (node.text, node.metadata["bbox"]) for node in original
     ]
+
+
+def test_same_page_columns_keep_their_own_section(tmp_path):
+    """左右栏各沿用本栏标题，通栏标题可更新两栏上下文。"""
+    path = tmp_path / "columns.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((50, 50), "Overview of all available operating controls", fontsize=18)
+        page.insert_text((315, 68), "Read the display first.")
+        page.insert_text((50, 90), "Heating", fontsize=16)
+        page.insert_text((305, 95), "Water pressure", fontsize=16)
+        page.insert_text((55, 120), "1. Select heating.")
+        page.insert_text((315, 120), "1. Read the pressure.")
+        page.insert_text((50, 160), "Common status messages for all operating controls", fontsize=18)
+        page.insert_text((315, 185), "Read the current status.")
+        pdf.set_toc([
+            [1, "Overview of all available operating controls", 1],
+            [2, "Heating", 1],
+            [2, "Water pressure", 1],
+            [1, "Common status messages for all operating controls", 1],
+        ])
+        pdf.save(path)
+
+    nodes = build_nodes(load_document(path, control_type="按键式"), path)
+    sections = {node.text: node.metadata["section"] for node in nodes}
+    assert sections["Read the display first."] == "Overview of all available operating controls"
+    assert sections["1. Select heating."] == "Heating"
+    assert sections["1. Read the pressure."] == "Water pressure"
+    assert sections["Read the current status."] == "Common status messages for all operating controls"
