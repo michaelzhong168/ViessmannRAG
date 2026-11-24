@@ -57,6 +57,7 @@ def snapshot(tmp_path, monkeypatch):
             ("CC", "Check the controller."),
             ("E10", "Note the reading."),
             ("E11", "Check gas wiring."),
+            ("Fault code F12 (gas leak)", "Record the display."),
         ]),
         ("旋钮式", [("Fault code F02", "Check the dial."), ("Fault code F70", "Check the dial.")]),
         ("按键式", [
@@ -72,6 +73,7 @@ def snapshot(tmp_path, monkeypatch):
 @pytest.mark.parametrize(("question", "control_type", "expected"), [
     ("漏气了，屏幕显示 F02", None, "human_review"),
     ("怎么短接保护开关", "旋钮式", "human_review"),
+    ("怎么关闭过热保护", "按键式", "human_review"),
     ("显示 F02", None, "missing_control_type"),
     ("显示 F02", "   ", "missing_control_type"),
     ("显示 F02", "不清楚", "control_type_mismatch"),
@@ -88,6 +90,7 @@ def snapshot(tmp_path, monkeypatch):
     ("故障码 F02、F99", "按键式", "fault_not_found"),
     ("显示 E10", "按键式", "clarify_fault"),
     ("显示 E11", "按键式", "human_review"),
+    ("显示 F12", "按键式", "human_review"),
     ("显示 E11、F99", "按键式", "human_review"),
 ])
 def test_pre_generation_routes(snapshot, question, control_type, expected):
@@ -119,6 +122,9 @@ def test_exact_lookup_returns_native_nodes_and_citations(snapshot):
     assert router.route("故障代码06", "按键式").fault_codes == ("06",)
     assert router.route("CC 怎么办", "按键式").status == "fault_match"
     assert router.route("fault code F02, please help", "按键式").status == "fault_match"
+    assert router.route("故障码 F02 和 06", "按键式").fault_codes == ("06", "F02")
+    assert router.route("fault codes F02 and 06", "按键式").fault_codes == ("06", "F02")
+    assert router.route("显示 F02 CC", "按键式").fault_codes == ("CC", "F02")
 
 
 def test_independent_snapshots_and_missing_type(snapshot, tmp_path):
@@ -137,3 +143,15 @@ def test_independent_snapshots_and_missing_type(snapshot, tmp_path):
     assert old_router.route("F71", "按键式").status == "fault_not_found"
     assert new_router.route("F71", "按键式").status == "fault_match"
     assert new_router.route("F02", "旋钮式").status == "control_type_mismatch"
+
+
+def test_returned_node_edits_cannot_change_future_citations(snapshot):
+    """调用方可以使用可变的原生节点，后续引用仍来自加载的快照。"""
+    router = QuestionRouter(load_index(snapshot))
+    first = router.route("F02", "按键式")
+    first.nodes[0].text = "Changed by caller."
+    first.nodes[0].metadata["bbox"][0] = 0
+    first.nodes[0].metadata["page_no"] = 44
+    again = router.route("F02", "按键式")
+    assert again.citations == first.citations
+    assert again.nodes[0].text == first.citations[0].quote

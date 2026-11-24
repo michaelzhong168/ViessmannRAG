@@ -18,19 +18,21 @@ RouteStatus = Literal[
 _HAZARD = re.compile(
     r"燃气|煤气|天然气|漏气|气体泄漏|焦糊|冒烟|起火|一氧化碳|触电|漏电|"
     r"拆机|拆卸|拆开|拆除|打开外壳|点火|排烟|烟道|烟管|接线|布线|电气连接|电源线|导线|线束|端子|"
-    r"短接|旁路|绕过.{0,8}保护|"
+    r"短接|旁路|(?:关闭|禁用|取消|停用|屏蔽|绕过).{0,8}保护|"
     r"\b(?:gas|disassemble|dismantle|ignition|ignite|flue|wiring|wire)\b"
 )
 _CODE_LABEL = r"(?:故障\s*(?:代\s*码|码)|错误\s*(?:代码|码)|报码|fault\s+codes?)"
 _CODE = r"[a-z0-9]+(?:[.-][a-z0-9]+)*"
-_CODE_SEPARATOR = r"\s*(?:[、,，/]|或(?:者)?)\s*"
+_CODE_SEPARATOR = r"\s*(?:[、,/;]|或(?:者)?|以及|和|及|\b(?:and|or)\b)\s*"
 _CODE_LIST = rf"{_CODE}(?:{_CODE_SEPARATOR}{_CODE})*"
 _LABELED_CODES = re.compile(rf"{_CODE_LABEL}\s*[:：]?\s*(?:为|是)?\s*({_CODE_LIST})")
 _BARE_CODE_LIST = re.compile(_CODE_LIST)
 _TOKEN = re.compile(_CODE)
 _STANDARD_CODE = re.compile(r"[fe][0-9]+(?:[.-][a-z0-9]+)*")
 _DISPLAY_CUE = re.compile(r"(?:显示|报|闪烁|跳出|提示|代码|code)\s*[:：]?\s*$")
+_QUANTITY_BEFORE = re.compile(r"(?<![a-z0-9.])(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*$")
 _SYMPTOM = re.compile(r"故障|报错|报警|不工作|不热|不启动|没热水")
+_HUMAN_REVIEW_MESSAGE = "请联系菲斯曼售后或具备资质的专业人员处理。"
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,7 @@ def _question_codes(question: str, known_codes: set[str]) -> tuple[str, ...]:
             # 纯数字可能是读数，纯字母紧跟数字时可能是单位。
             if (
                 (not value.isdigit() and not value.isalpha())
-                or (value.isalpha() and not re.search(r"[0-9]\s*$", question[:token.start()]))
+                or (value.isalpha() and not _QUANTITY_BEFORE.search(question, 0, token.start()))
                 or question == value
                 or _DISPLAY_CUE.search(question[:token.start()])
                 or question[token.end():].lstrip().startswith("闪烁")
@@ -122,7 +124,7 @@ class QuestionRouter:
         if not query:
             raise ValueError("问句不能为空")
         if _HAZARD.search(query):
-            return RouteResult("human_review", "请联系菲斯曼售后或具备资质的专业人员处理。")
+            return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE)
         if control_type is None or not control_type.strip():
             return RouteResult("missing_control_type", "请确认设备是旋钮式、按键式还是触控式。")
         entries = self._table.get(control_type.strip())
@@ -136,9 +138,8 @@ class QuestionRouter:
             return RouteResult("retrieve")
 
         matches = [entries.get(code, []) for code in codes]
-        if any(_HAZARD.search(_normalize(node.text.partition("\t")[2]))
-               for rows in matches for node in rows):
-            return RouteResult("human_review", "请联系菲斯曼售后或具备资质的专业人员处理。", codes)
+        if any(_HAZARD.search(_normalize(node.text)) for rows in matches for node in rows):
+            return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE, codes)
         if not all(matches):
             return RouteResult("fault_not_found", "当前操作类型的说明书缺少对应故障码，请核对报码。", codes)
         # 表格中不同的处置文字可能对应同类设备内的适用差异，交由用户澄清。
@@ -156,4 +157,6 @@ class QuestionRouter:
                      tuple(node.metadata["bbox"]), node.text)
             for node in nodes.values()
         )
-        return RouteResult("fault_match", fault_codes=codes, nodes=tuple(nodes.values()), citations=citations)
+        # TextNode 可变，交给调用方的节点需隔离于下一次路由。
+        evidence = tuple(node.model_copy(deep=True) for node in nodes.values())
+        return RouteResult("fault_match", fault_codes=codes, nodes=evidence, citations=citations)
