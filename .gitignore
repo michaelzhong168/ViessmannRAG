@@ -15,6 +15,7 @@ __pycache__/
 # ── 可重跑生成的产物（不进仓，靠 pipeline/ 重建）──
 data/fts5.db
 /data/eu.jsonl
+/data/codes.json
 data/pages/
 
 # ── 真实语料（只读输入；版权 / 体积原因不进仓）──
