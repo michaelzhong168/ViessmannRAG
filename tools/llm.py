@@ -57,7 +57,9 @@ def _resolve_timeout() -> float:
         raise RuntimeError(f"LLM_TIMEOUT_S 不是合法数字：{raw!r}") from exc
 
 
-def generate(prompt: str, model: str | None = None) -> str:
+def generate(
+    prompt: str, model: str | None = None, *, system_prompt: str = SYSTEM_PROMPT,
+) -> str:
     """唯一模型入口：固定 temperature / max_tokens / timeout，返回纯文本。"""
     client = _get_client()
     model_name = _resolve_model(model)
@@ -65,7 +67,7 @@ def generate(prompt: str, model: str | None = None) -> str:
     response = client.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=TEMPERATURE,
