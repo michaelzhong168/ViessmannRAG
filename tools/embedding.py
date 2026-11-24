@@ -10,7 +10,7 @@ from pydantic import PrivateAttr
 
 from tools import llm
 
-_BATCH_SIZE = 10  # text-embedding-v4 每次请求最多接受 10 条文本。
+_BATCH_SIZE = 10  # 保持配置切换时兼容百炼模型的较小批次上限。
 
 
 class BailianEmbedding(BaseEmbedding):
