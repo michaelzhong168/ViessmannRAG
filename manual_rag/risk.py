@@ -2,7 +2,7 @@
 
 import re
 
-# 单独出现就需要转人工的现象和作业。
+# 单独出现就需要提示安全风险的现象和作业。
 _HAZARD_SIGNALS = (
     "漏气", "气体泄漏", "燃气泄漏", "煤气泄漏", "天然气泄漏",
     "燃气味", "煤气味", "天然气味", "焦糊", "异味", "臭鸡蛋味",
@@ -11,7 +11,7 @@ _HAZARD_SIGNALS = (
     "接线", "布线", "短接", "旁路",
 )
 
-# 查询这些部件的状态是只读操作。出现处置动作时转人工。
+# 查询这些部件的状态是只读操作。出现处置动作时提示安全风险。
 _RESTRICTED_PARTS = (
     "燃气阀", "燃气管", "燃气压力", "燃烧器", "燃烧室", "喷嘴", "点火电极",
     "烟道", "烟管", "电源线", "保护", "联锁", "安全装置",
@@ -52,7 +52,7 @@ def _works_on_restricted_part(sentence: str) -> bool:
     return False
 
 
-def requires_human_review(text: str) -> bool:
+def requires_safety_notice(text: str) -> bool:
     """判断规范化后的文字是否出现明确危险现象或危险处置。"""
     if _contains(text, _HAZARD_SIGNALS):
         return True

@@ -8,16 +8,23 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import TextNode
 
 from manual_rag.fault_codes import codes_in_question, codes_in_table_row
-from manual_rag.risk import requires_human_review
+from manual_rag.risk import requires_safety_notice
 from manual_rag.source import CONTROL_TYPES
 
 RouteStatus = Literal[
-    "retrieve", "fault_match", "human_review", "missing_control_type",
+    "retrieve", "fault_match", "safety_notice", "missing_control_type",
     "control_type_mismatch", "clarify_fault", "fault_not_found",
 ]
 
 _FAULT_SYMPTOMS = ("故障", "报错", "报警", "不工作", "不热", "不启动", "没热水")
-_HUMAN_REVIEW_MESSAGE = "请联系菲斯曼售后或具备资质的专业人员处理。"
+_SAFETY_NOTICE_MESSAGE = (
+    "安全提示\n"
+    "请停止当前操作。若闻到燃气味，请勿开启暖气或开关电器，"
+    "请到室外安全地点联系当地燃气公司的抢修热线。\n\n"
+    "菲斯曼设备服务\n"
+    "现场安全后，如需检查壁挂炉，请拨打 400 650 8850。"
+    "来源为说明书第 44 页「联络公司」。"
+)
 
 
 @dataclass(frozen=True)
@@ -70,8 +77,8 @@ class QuestionRouter:
         query = _normalize(question).strip()
         if not query:
             raise ValueError("问句不能为空")
-        if requires_human_review(query):
-            return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE)
+        if requires_safety_notice(query):
+            return RouteResult("safety_notice", _SAFETY_NOTICE_MESSAGE)
         if control_type is None or not control_type.strip():
             return RouteResult("missing_control_type", "请确认设备是旋钮式、按键式还是触控式。")
         entries = self._table.get(control_type.strip())
@@ -85,8 +92,8 @@ class QuestionRouter:
             return RouteResult("retrieve")
 
         matches = [entries.get(code, []) for code in codes]
-        if any(requires_human_review(_normalize(node.text)) for rows in matches for node in rows):
-            return RouteResult("human_review", _HUMAN_REVIEW_MESSAGE, codes)
+        if any(requires_safety_notice(_normalize(node.text)) for rows in matches for node in rows):
+            return RouteResult("safety_notice", _SAFETY_NOTICE_MESSAGE, codes)
         if not all(matches):
             return RouteResult("fault_not_found", "当前操作类型的说明书缺少对应故障码，请核对报码。", codes)
         # 表格中不同的处置文字可能对应同类设备内的适用差异，交由用户澄清。

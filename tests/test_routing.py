@@ -72,19 +72,19 @@ def snapshot(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("question", "control_type", "expected"), [
-    ("漏气了，屏幕显示 F02", None, "human_review"),
-    ("怎么短接保护开关", "旋钮式", "human_review"),
-    ("怎么关闭过热保护", "按键式", "human_review"),
+    ("漏气了，屏幕显示 F02", None, "safety_notice"),
+    ("怎么短接保护开关", "旋钮式", "safety_notice"),
+    ("怎么关闭过热保护", "按键式", "safety_notice"),
     ("请问怎么查看屏幕上的燃气阀位置？", "按键式", "retrieve"),
     ("燃气阀状态怎么看", "按键式", "retrieve"),
     ("烟道系统信息在哪看", "按键式", "retrieve"),
     ("如何查看点火状态", "按键式", "retrieve"),
     ("如何查询显示屏上的燃气阀状态", None, "missing_control_type"),
     ("怎么查看燃气阀位置", "按键式", "retrieve"),
-    ("怎么调燃气阀", "按键式", "human_review"),
-    ("怎么检查接线", "按键式", "human_review"),
-    ("闻到燃气味了，怎么查看屏幕上的燃气阀位置", "按键式", "human_review"),
-    ("怎么查看燃气阀状态，顺便把它调高", "按键式", "human_review"),
+    ("怎么调燃气阀", "按键式", "safety_notice"),
+    ("怎么检查接线", "按键式", "safety_notice"),
+    ("闻到燃气味了，怎么查看屏幕上的燃气阀位置", "按键式", "safety_notice"),
+    ("怎么查看燃气阀状态，顺便把它调高", "按键式", "safety_notice"),
     ("显示 F02", None, "missing_control_type"),
     ("显示 F02", "   ", "missing_control_type"),
     ("显示 F02", "不清楚", "control_type_mismatch"),
@@ -95,26 +95,26 @@ def snapshot(tmp_path, monkeypatch):
     ("家里刚安装的燃气壁挂炉怎么打开暖气", "按键式", "retrieve"),
     ("天然气锅炉怎么查看水压", "按键式", "retrieve"),
     ("How do I turn on heating on my gas-fired boiler?", "按键式", "retrieve"),
-    ("燃气壁挂炉漏气了，怎么打开暖气", "按键式", "human_review"),
-    ("燃气壁挂炉闻到燃气味，还能打开暖气吗", "按键式", "human_review"),
-    ("燃气壁挂炉如何调燃气阀", "按键式", "human_review"),
-    ("燃气壁挂炉怎么调燃气压力", "按键式", "human_review"),
-    ("燃气阀压力不合适；我该怎么调高？", "按键式", "human_review"),
+    ("燃气壁挂炉漏气了，怎么打开暖气", "按键式", "safety_notice"),
+    ("燃气壁挂炉闻到燃气味，还能打开暖气吗", "按键式", "safety_notice"),
+    ("燃气壁挂炉如何调燃气阀", "按键式", "safety_notice"),
+    ("燃气壁挂炉怎么调燃气压力", "按键式", "safety_notice"),
+    ("燃气阀压力不合适；我该怎么调高？", "按键式", "safety_notice"),
     ("我想查看屏幕上的燃烧器状态，另外请问遥控器里的电池该怎么换？", "按键式", "retrieve"),
     ("屏幕上显示了燃气阀状态。请问暖气温度怎么调高？", "按键式", "retrieve"),
-    ("燃气壁挂炉怎么换电源线", "按键式", "human_review"),
-    ("怎样用打火机给燃气壁挂炉点火", "按键式", "human_review"),
-    ("天然气锅炉怎么接气", "按键式", "human_review"),
-    ("燃气壁挂炉的喷嘴怎么换", "按键式", "human_review"),
-    ("燃气壁挂炉怎么改成液化气", "按键式", "human_review"),
-    ("燃气壁挂炉怎么关闭安全联锁", "按键式", "human_review"),
-    ("燃气壁挂炉闻到异味，还能打开暖气吗", "按键式", "human_review"),
-    ("如何在厨房安装燃气锅炉", "按键式", "human_review"),
-    ("燃气锅炉怎么安装", "按键式", "human_review"),
-    ("燃气壁挂炉怎么更换燃烧器", "按键式", "human_review"),
-    ("燃气壁挂炉的燃烧室怎么清理", "按键式", "human_review"),
-    ("How do I install a gas boiler?", "按键式", "human_review"),
-    ("My gas boiler is leaking, can I turn on heating?", "按键式", "human_review"),
+    ("燃气壁挂炉怎么换电源线", "按键式", "safety_notice"),
+    ("怎样用打火机给燃气壁挂炉点火", "按键式", "safety_notice"),
+    ("天然气锅炉怎么接气", "按键式", "safety_notice"),
+    ("燃气壁挂炉的喷嘴怎么换", "按键式", "safety_notice"),
+    ("燃气壁挂炉怎么改成液化气", "按键式", "safety_notice"),
+    ("燃气壁挂炉怎么关闭安全联锁", "按键式", "safety_notice"),
+    ("燃气壁挂炉闻到异味，还能打开暖气吗", "按键式", "safety_notice"),
+    ("如何在厨房安装燃气锅炉", "按键式", "safety_notice"),
+    ("燃气锅炉怎么安装", "按键式", "safety_notice"),
+    ("燃气壁挂炉怎么更换燃烧器", "按键式", "safety_notice"),
+    ("燃气壁挂炉的燃烧室怎么清理", "按键式", "safety_notice"),
+    ("How do I install a gas boiler?", "按键式", "safety_notice"),
+    ("My gas boiler is leaking, can I turn on heating?", "按键式", "safety_notice"),
     ("容量 20 cc", "按键式", "retrieve"),
     ("怎么查看 06 bar 的设定", "按键式", "retrieve"),
     ("显示 F02", "触控式", "fault_not_found"),
@@ -125,9 +125,9 @@ def snapshot(tmp_path, monkeypatch):
     ("F02-X 如何处理", "按键式", "fault_not_found"),
     ("故障码 F02、F99", "按键式", "fault_not_found"),
     ("显示 E10", "按键式", "clarify_fault"),
-    ("显示 E11", "按键式", "human_review"),
-    ("显示 F12", "按键式", "human_review"),
-    ("显示 E11、F99", "按键式", "human_review"),
+    ("显示 E11", "按键式", "safety_notice"),
+    ("显示 F12", "按键式", "safety_notice"),
+    ("显示 E11、F99", "按键式", "safety_notice"),
 ])
 def test_pre_generation_routes(snapshot, question, control_type, expected):
     """提前终止、澄清和检索许可均不附未命中的查表引用。"""
@@ -192,3 +192,20 @@ def test_returned_node_edits_cannot_change_future_citations(snapshot):
     again = router.route("F02", "按键式")
     assert again.citations == first.citations
     assert again.nodes[0].text == first.citations[0].quote
+
+
+def test_risk_branches_return_the_same_fixed_notice(snapshot):
+    """校验危险问句与危险表格处置均返回完整固定文案。"""
+    router = QuestionRouter(load_index(snapshot))
+    question = router.route("闻到燃气味，还能打开暖气吗？")
+    evidence = router.route("显示 E11", "按键式")
+
+    assert question.status == evidence.status == "safety_notice"
+    assert question.message == evidence.message == (
+        "安全提示\n"
+        "请停止当前操作。若闻到燃气味，请勿开启暖气或开关电器，"
+        "请到室外安全地点联系当地燃气公司的抢修热线。\n\n"
+        "菲斯曼设备服务\n"
+        "现场安全后，如需检查壁挂炉，请拨打 400 650 8850。"
+        "来源为说明书第 44 页「联络公司」。"
+    )
