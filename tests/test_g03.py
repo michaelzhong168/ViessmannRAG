@@ -261,3 +261,32 @@ def test_bookmark_recovers_body_sized_heading_on_its_page(tmp_path):
     layout = analyze_layout(parse_pdf(path, tmp_path / "pages"))
     assert [(heading.page_no, heading.text) for heading in layout.headings] == [(1, "Operation")]
     assert [block.page_no for block in layout.body_blocks if block.text == "Operation"] == [2]
+
+
+def test_partial_bookmarks_keep_unlisted_headings_on_the_same_page(tmp_path):
+    path = tmp_path / "partial-bookmarks.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        for y, text, size in (
+            (110, "Service Guide", 24),
+            (180, "Operation", 18),
+            (230, "Read the operating instructions before use.", 10),
+            (270, "1. Press OK", 15),
+            (310, "Maintenance", 18),
+            (360, "The maintenance instructions are in this section.", 10),
+            (405, "Check the display. The indicator", 15),
+        ):
+            page.insert_text((50, y), text, fontsize=size)
+        pdf.set_toc([[1, "Service Guide", 1]])
+        pdf.save(path)
+
+    layout = analyze_layout(parse_pdf(path, tmp_path / "pages"))
+    assert [(heading.text, heading.level) for heading in layout.headings] == [
+        ("Service Guide", 1), ("Operation", 2), ("Maintenance", 2),
+    ]
+    assert {block.text: block.chapter for block in layout.body_blocks} == {
+        "Read the operating instructions before use.": "Operation",
+        "1. Press OK": "Operation",
+        "The maintenance instructions are in this section.": "Maintenance",
+        "Check the display. The indicator": "Maintenance",
+    }

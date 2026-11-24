@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ HEADING_SIZE_RATIO = 1.15
 HEADING_MAX_CHARS = 60
 HEADING_MAX_LINES = 2
 BODY_SIZE_MIN_SHARE = 0.25
+BODY_TEXT_MARKER = re.compile(r"^(?:[■●▪•]|[0-9]+(?:[、)]|[.．](?!\d)))|[。！？；]|[.!?]\s")
 
 
 @dataclass
@@ -160,7 +162,6 @@ def _heading_candidates(blocks: list[Block], bookmarks: set[tuple[int, str]]) ->
         id(block) for block in blocks
         if (block.page_no, _heading_text_key(block.text)) in bookmarks
     }
-    confirmed_pages = {block.page_no for block in blocks if id(block) in confirmed}
     body_weights: Counter[float] = Counter()
     for block in blocks:
         if id(block) not in confirmed:
@@ -171,15 +172,16 @@ def _heading_candidates(blocks: list[Block], bookmarks: set[tuple[int, str]]) ->
     weight_floor = max(body_weights.values()) * BODY_SIZE_MIN_SHARE
     body_size = min(size for size, weight in body_weights.items() if weight >= weight_floor)
 
-    # 同页书签可核对时以书签为准；其余页要求字号突出且文本形态像标题。
+    # 同页书签能确定标题，目录没列出的块按字号和文本形态继续判断。
     for block in blocks:
         text = block.text.strip()
         if (
-            block.page_no not in confirmed_pages
+            id(block) not in confirmed
             and round(block.font_size, 1) >= body_size * HEADING_SIZE_RATIO
             and len(text) <= HEADING_MAX_CHARS
             and len(text.splitlines()) <= HEADING_MAX_LINES
-            and not text.endswith((".", "。", "!", "！", "?", "？", ";", "；"))
+            and not BODY_TEXT_MARKER.search(text)
+            and not text.endswith((".", "!", "?", ";", ":", "："))
         ):
             confirmed.add(id(block))
     return confirmed

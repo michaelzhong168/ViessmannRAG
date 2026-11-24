@@ -3,6 +3,7 @@
 import argparse
 import json
 import re
+from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,14 @@ class ModelScope:
     model_codes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class CodeSourceMetadata:
+    """经核定的型号范围，以及重复分组证据的备选哈希到首选哈希映射。"""
+
+    scopes: list[ModelScope]
+    preferred_hashes: dict[str, str]
+
+
 @dataclass
 class _FaultRow:
     codes: tuple[str, ...]
@@ -63,8 +72,8 @@ def load_eus(path: str | Path) -> list[EU]:
     return eus
 
 
-def load_model_scopes(path: str | Path, eus: list[EU]) -> list[ModelScope]:
-    """读取文档专用型号范围，拒绝不匹配的文档、无效型号和重叠页段。"""
+def load_source_metadata(path: str | Path, eus: list[EU]) -> CodeSourceMetadata:
+    """加载与本次 EU 文档一致的型号范围和已核定的分组证据选择。"""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("scopes"), list):
         raise ValueError(f"{path}：型号范围需要包含 doc_id 和 scopes 数组")
@@ -89,7 +98,27 @@ def load_model_scopes(path: str | Path, eus: list[EU]) -> list[ModelScope]:
     for earlier, later in zip(scopes, scopes[1:]):
         if earlier.last_page >= later.first_page:
             raise ValueError(f"{path}：型号范围的物理页段重叠")
-    return scopes
+
+    choices = data.get("preferred_evidence", [])
+    if not isinstance(choices, list):
+        raise ValueError(f"{path}：preferred_evidence 必须为数组")
+    table_hashes = {eu.content_hash for eu in eus if eu.is_table_row}
+    preferred_hashes: dict[str, str] = {}
+    for entry in choices:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}：首选证据配置必须为对象")
+        alternate = entry.get("alternate_hash")
+        preferred = entry.get("preferred_hash")
+        if (
+            not isinstance(alternate, str) or not isinstance(preferred, str)
+            or alternate not in table_hashes or preferred not in table_hashes
+            or alternate == preferred or alternate in preferred_hashes
+        ):
+            raise ValueError(f"{path}：首选证据必须引用两个不同的现有表格行哈希，备选引用不可重复")
+        preferred_hashes[alternate] = preferred
+    if preferred_hashes.keys() & preferred_hashes.values():
+        raise ValueError(f"{path}：首选证据不可同时作为备选证据")
+    return CodeSourceMetadata(scopes, preferred_hashes)
 
 
 def _grouped_codes(cause: str) -> tuple[str, ...]:
@@ -128,25 +157,35 @@ def _fault_rows(table: Table) -> Iterator[_FaultRow]:
             yield _FaultRow(codes, " | ".join(cells), bbox, models, grouped)
 
 
-def _merge_grouped_evidence(previous: dict, current: dict) -> dict:
-    if previous["quote"] == current["quote"]:
-        return min((previous, current), key=lambda row: (row["page_no"], row["eu_id"]))
-    shorter, longer = sorted((previous, current), key=lambda row: len(row["quote"]))
-    # 同一条排障说明在不同章节重复时，保留明确带有附注的那条原文。
-    if (
-        previous["action_level"] == current["action_level"]
-        and longer["quote"].startswith(shorter["quote"].rstrip() + "\n提示\n")
-    ):
-        return longer
-    pages = sorted((previous["page_no"], current["page_no"]))
+def _select_grouped_evidence(
+    candidates: list[dict], hashes_by_id: dict[str, str], preferred_hashes: dict[str, str]
+) -> dict:
+    ordered = sorted(candidates, key=lambda row: (row["page_no"], row["eu_id"]))
+    first = ordered[0]
+    quote_hashes: dict[str, set[str]] = defaultdict(set)
+    for row in ordered:
+        quote_hashes[row["quote"]].add(hashes_by_id[row["eu_id"]])
+    if len(quote_hashes) == 1:
+        return first
+
+    # 核定的首选行必须覆盖所有不同引文，风险等级有分歧时仍报错。
+    if preferred_hashes and len({row["action_level"] for row in ordered}) == 1:
+        for row in ordered:
+            preferred = hashes_by_id[row["eu_id"]]
+            if all(
+                quote == row["quote"] or any(preferred_hashes.get(h) == preferred for h in hashes)
+                for quote, hashes in quote_hashes.items()
+            ):
+                return row
+    pages = "、".join(str(page) for page in sorted({row["page_no"] for row in ordered}))
     raise ValueError(
-        f"DUPLICATE_CODE: {current['code']} / {current['model_code']}，"
-        f"物理页 {pages[0]}、{pages[1]} 的分组故障码证据冲突"
+        f"DUPLICATE_CODE: {first['code']} / {first['model_code']}，"
+        f"物理页 {pages} 的分组故障码证据冲突"
     )
 
 
 def build_codes(
-    tables: list[Table], eus: list[EU], model_scopes: list[ModelScope] | None = None
+    tables: list[Table], eus: list[EU], metadata: CodeSourceMetadata | None = None
 ) -> list[dict]:
     """按页码、行框和逐字文本关联 EU，构建并验证按双键排序的故障码条目。"""
     by_row = {}
@@ -158,7 +197,10 @@ def build_codes(
             by_row[key] = eu
 
     codes = []
-    grouped_entries: dict[tuple[str, str], dict] = {}
+    grouped_entries: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    hashes_by_id = {eu.eu_id: eu.content_hash for eu in by_row.values()}
+    model_scopes = metadata.scopes if metadata is not None else ()
+    preferred_hashes = metadata.preferred_hashes if metadata is not None else {}
     for table in tables:
         table_models = set(MODEL_CODE_PATTERN.findall(table.chapter + "\n" + table.header_text))
         for row in _fault_rows(table):
@@ -169,7 +211,7 @@ def build_codes(
             models = row.explicit_models
             if models is None:
                 scope_models = next((
-                    scope.model_codes for scope in model_scopes or ()
+                    scope.model_codes for scope in model_scopes
                     if scope.doc_id == eu.doc_id and scope.first_page <= eu.page_no <= scope.last_page
                 ), ())
                 models = (
@@ -191,13 +233,14 @@ def build_codes(
                     }
                     if row.grouped:
                         code_key = _normalized_key(code, model)
-                        previous = grouped_entries.get(code_key)
-                        grouped_entries[code_key] = (
-                            _merge_grouped_evidence(previous, entry) if previous is not None else entry
-                        )
+                        grouped_entries[code_key].append(entry)
                     else:
                         codes.append(entry)
-    indexed = _index_codes([*codes, *grouped_entries.values()])
+    codes.extend(
+        _select_grouped_evidence(candidates, hashes_by_id, preferred_hashes)
+        for _, candidates in sorted(grouped_entries.items())
+    )
+    indexed = _index_codes(codes)
     return [indexed[key] for key in sorted(indexed)]
 
 
@@ -219,8 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         _require_regular_output(args.audit)
         layout = load_layout(args.layout)
         eus = load_eus(args.eus)
-        model_scopes = load_model_scopes(args.model_scopes, eus) if args.model_scopes is not None else None
-        codes = build_codes(layout.tables, eus, model_scopes)
+        metadata = load_source_metadata(args.model_scopes, eus) if args.model_scopes is not None else None
+        codes = build_codes(layout.tables, eus, metadata)
         verification = verify_quotes(codes, eus)
         if verification["mismatched"]:
             raise ValueError("生成的故障码引文未通过逐字核验")

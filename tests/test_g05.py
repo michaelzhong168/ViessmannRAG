@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 import config
 import lookup
 from lookup import load_codes, lookup_code, verify_quotes
-from pipeline.build_codes import build_codes, load_eus, load_model_scopes
+from pipeline.build_codes import build_codes, load_eus, load_source_metadata
 from pipeline.build_eu import write_jsonl
 from pipeline.layout import Table, load_layout, write_layout
 from pipeline.parse import Document, Page, write_audit
@@ -242,9 +242,12 @@ def _grouped_source(page, action="记录显示。"):
     return table, eu
 
 
-def _write_model_scopes(tmp_path, scopes, doc_id="g05-fixture"):
+def _write_model_scopes(tmp_path, scopes, doc_id="g05-fixture", choices=None):
     path = tmp_path / "model-scopes.json"
-    path.write_text(json.dumps({"doc_id": doc_id, "scopes": scopes}), encoding="utf-8")
+    document = {"doc_id": doc_id, "scopes": scopes}
+    if choices is not None:
+        document["preferred_evidence"] = choices
+    path.write_text(json.dumps(document), encoding="utf-8")
     return path
 
 
@@ -259,8 +262,11 @@ def test_cli_grouped_rows_keep_original_evidence_and_model_scope(tmp_path):
     layout.tables = [table3, table2, table1, unrelated]
     write_layout(layout, data / "layout.json")
     write_jsonl([eu1, eu2, eu3], data / "eu.jsonl")
-    path = _write_model_scopes(tmp_path, [{"first_page": 1, "last_page": 2,
-                                         "model_codes": ["B1KA", "L1P20-A1JF"]}])
+    path = _write_model_scopes(
+        tmp_path,
+        [{"first_page": 1, "last_page": 2, "model_codes": ["B1KA", "L1P20-A1JF"]}],
+        choices=[{"alternate_hash": eu1.content_hash, "preferred_hash": eu2.content_hash}],
+    )
 
     assert "code_count=0" in _run_cli(tmp_path).stdout
     assert "code_count=10" in _run_cli(tmp_path, "--model-scopes", str(path)).stdout
@@ -281,14 +287,27 @@ def test_cli_grouped_rows_keep_original_evidence_and_model_scope(tmp_path):
     assert output.read_bytes() == snapshot
 
 
-def test_grouped_conflicting_evidence_fails(tmp_path):
-    table1, eu1 = _grouped_source(1)
-    table2, eu2 = _grouped_source(2, "拆机检查。")
+@pytest.mark.parametrize("second_action", ["允许继续运行。\n提示\n禁止继续运行。", "拆机检查。"])
+def test_grouped_conflicting_evidence_fails(tmp_path, second_action):
+    table1, eu1 = _grouped_source(1, "允许继续运行。")
+    table2, eu2 = _grouped_source(2, second_action)
     path = _write_model_scopes(tmp_path, [{"first_page": 1, "last_page": 2,
                                          "model_codes": ["B1KA"]}])
-    scopes = load_model_scopes(path, [eu1, eu2])
+    metadata = load_source_metadata(path, [eu1, eu2])
     with pytest.raises(ValueError, match=r"DUPLICATE_CODE.*B1KA.*1.*2"):
-        build_codes([table1, table2], [eu1, eu2], scopes)
+        build_codes([table1, table2], [eu1, eu2], metadata)
+
+
+def test_grouped_evidence_cannot_override_different_action_level(tmp_path):
+    table1, eu1 = _grouped_source(1)
+    table2, eu2 = _grouped_source(2, "拆机检查。")
+    path = _write_model_scopes(
+        tmp_path, [{"first_page": 1, "last_page": 2, "model_codes": ["B1KA"]}],
+        choices=[{"alternate_hash": eu2.content_hash, "preferred_hash": eu1.content_hash}],
+    )
+    metadata = load_source_metadata(path, [eu1, eu2])
+    with pytest.raises(ValueError, match=r"DUPLICATE_CODE.*B1KA"):
+        build_codes([table1, table2], [eu1, eu2], metadata)
 
 
 def test_model_scopes_reject_wrong_document_and_overlapping_ranges(tmp_path):
@@ -296,10 +315,16 @@ def test_model_scopes_reject_wrong_document_and_overlapping_ranges(tmp_path):
     range_ = {"first_page": 1, "last_page": 2, "model_codes": ["B1KA"]}
     path = _write_model_scopes(tmp_path, [range_], doc_id="another")
     with pytest.raises(ValueError, match="doc_id"):
-        load_model_scopes(path, [eu])
+        load_source_metadata(path, [eu])
 
     path = _write_model_scopes(tmp_path, [
         range_, {"first_page": 2, "last_page": 3, "model_codes": ["B1HA"]},
     ])
     with pytest.raises(ValueError, match="重叠"):
-        load_model_scopes(path, [eu])
+        load_source_metadata(path, [eu])
+
+    path = _write_model_scopes(tmp_path, [range_], choices=[
+        {"alternate_hash": "0" * 64, "preferred_hash": eu.content_hash},
+    ])
+    with pytest.raises(ValueError, match="现有表格行哈希"):
+        load_source_metadata(path, [eu])

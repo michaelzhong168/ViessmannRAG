@@ -49,7 +49,7 @@ python -m pipeline.build_codes --model-scopes data/raw/model-scopes.json
 }
 ```
 
-「原因｜排除故障」表中明确列出的故障码可拆成独立条目，保留原行证据。型号未核定的条目暂不上表。同一型号和代码的冲突证据会报出两个物理页，供核查。
+「原因｜排除故障」表中明确列出的故障码会拆成独立条目，保留原行证据。型号未核定的条目暂不上表。同一型号和代码有不同引文时，脚本会报出对应物理页。核对原页后，可以在 JSON 顶层加入 `"preferred_evidence": [{"alternate_hash": "...", "preferred_hash": "..."}]`，填入两条表格行 EU 的 `content_hash`。风险等级有分歧时，脚本仍会报错。
 
 ## 可选的模型冒烟
 
