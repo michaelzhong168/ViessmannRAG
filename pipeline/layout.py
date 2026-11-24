@@ -2,27 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from dataclasses import dataclass
 
 import pymupdf
 
-from pipeline.parse import (
-    Document,
-    _OutputPathConflict,
-    _parse_pdf,
-    _require_distinct_files,
-    _require_regular_output,
-    write_audit,
-)
-
 UNSECTIONED = "(未分章)"
-DEFAULT_LAYOUT_PATH = "data/layout.json"
 HEADING_SIZE_RATIO = 1.15
 HEADING_MAX_CHARS = 60
 HEADING_MAX_LINES = 2
@@ -216,87 +202,24 @@ def _assign_chapters(
 
 
 def analyze_layout(
-    doc: Document, top_ratio: float = 0.08, bottom_ratio: float = 0.08
+    pdf: pymupdf.Document, first_page: int = 1, last_page: int | None = None,
 ) -> Layout:
-    """逐页提取正文和线框表格，再按全篇字号和阅读顺序划分章节。"""
+    """提取同一核定页段的版面，保持物理页码和页图方向的坐标。"""
+    last_page = len(pdf) if last_page is None else last_page
+    if not 1 <= first_page <= last_page <= len(pdf):
+        raise ValueError("页段须位于 PDF 物理页范围内")
     blocks: list[Block] = []
     tables: list[Table] = []
     removed = 0
-    with pymupdf.open(doc.pdf_path) as pdf:
-        bookmarks = {
-            (page_no, _heading_text_key(title)) for _, title, page_no in pdf.get_toc()
-        }
-        for page in pdf:
-            page_tables = _extract_tables(page)
-            page_blocks, page_removed = _extract_blocks(
-                page, page_tables, top_ratio, bottom_ratio
-            )
-            blocks.extend(page_blocks)
-            tables.extend(page_tables)
-            removed += page_removed
+    bookmarks = {
+        (page_no, _heading_text_key(title)) for _, title, page_no in pdf.get_toc()
+        if first_page <= page_no <= last_page
+    }
+    for number in range(first_page - 1, last_page):
+        page = pdf[number]
+        page_tables = _extract_tables(page)
+        page_blocks, page_removed = _extract_blocks(page, page_tables, 0.08, 0.08)
+        tables.extend(page_tables)
+        blocks.extend(page_blocks)
+        removed += page_removed
     return _assign_chapters(blocks, tables, removed, bookmarks)
-
-
-def write_layout(layout: Layout, path: str | Path = DEFAULT_LAYOUT_PATH) -> None:
-    path = Path(path)
-    content = json.dumps(
-        asdict(layout), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=".layout-", dir=path.parent) as directory:
-        staged = Path(directory) / path.name
-        staged.write_text(content, encoding="utf-8")
-        staged.replace(path)
-
-
-def load_layout(path: str | Path = DEFAULT_LAYOUT_PATH) -> Layout:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return Layout(
-        headings=[Heading(**item) for item in data["headings"]],
-        tables=[Table(**item) for item in data["tables"]],
-        body_blocks=[Block(**item) for item in data["body_blocks"]],
-        header_footer_removed=data["header_footer_removed"],
-    )
-
-
-def chapter_tree(layout: Layout) -> list[dict]:
-    return [
-        {"title": heading.text, "level": heading.level, "page_no": heading.page_no}
-        for heading in layout.headings
-    ]
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="识别 PDF 版面、章节与线框表格")
-    parser.add_argument("--pdf", type=Path, required=True)
-    args = parser.parse_args(argv)
-
-    layout_path = Path(DEFAULT_LAYOUT_PATH)
-    pages_path = Path("data/pages")
-    audit_path = Path("语料审计.md")
-    try:
-        _require_distinct_files(args.pdf, audit_path, layout_path)
-        _require_regular_output(layout_path)
-        doc = _parse_pdf(args.pdf, pages_path, audit_path)
-        _require_distinct_files(layout_path, *(Path(page.image_path) for page in doc.pages))
-        layout = analyze_layout(doc)
-        write_layout(layout, layout_path)
-        write_audit(
-            doc,
-            audit_path,
-            chapter_count=len(layout.headings),
-            table_count=len(layout.tables),
-            has_fault_code_table=any(
-                keyword in table.header_text.casefold()
-                for table in layout.tables
-                for keyword in ("代码", "故障", "code", "fault")
-            ),
-        )
-    except (_OutputPathConflict, UnicodeError) as exc:
-        parser.error(str(exc))
-    print(f"wrote {layout_path} and {audit_path}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
