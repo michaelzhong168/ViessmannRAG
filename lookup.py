@@ -1,6 +1,7 @@
 """按故障码与型号做精确匹配，并核对对应的 EU 引文。"""
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from functools import lru_cache
@@ -11,6 +12,9 @@ from schema import EU
 
 DEFAULT_CODES_PATH = "data/codes.json"
 ACTION_LEVELS = frozenset({"SAFE", "CAUTION", "P0_DANGER"})
+_QUERY_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*")
+_STANDARD_SHORT_CODE = re.compile(r"[FE][0-9]{1,2}")
+_CODE_LABEL = re.compile(r"(?:故障(?:代码|码)|错误(?:代码|码)|报码)[：: \t]*(?:为|是)?[：: \t]*$")
 
 
 def _normalized_key(code: str, model: str) -> tuple[str, str]:
@@ -67,16 +71,44 @@ def _load_default_codes(
     return load_codes(path)
 
 
+def _default_codes() -> Sequence[dict]:
+    path = Path(DEFAULT_CODES_PATH).resolve()
+    stat = path.stat()
+    version = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return _load_default_codes(path, version)
+
+
+def fault_codes_in_query(query: str) -> list[str]:
+    """识别明确故障码，其他两位短码只在 G05 表内确认。"""
+    explicit = set()
+    candidates = set()
+    for token in _QUERY_TOKEN.finditer(query):
+        code = token[0].upper()
+        prefix = query[:token.start()]
+        if _STANDARD_SHORT_CODE.fullmatch(code) or _CODE_LABEL.search(prefix):
+            explicit.add(code)
+        elif len(code) == 2 and code.isalnum():
+            # 避免把「20 cc」等带数值的单位读成短码。
+            if not (code.isalpha() and re.search(r"\d[ \t]*$", prefix)):
+                candidates.add(code)
+
+    if candidates - explicit:
+        try:
+            known = {row["code"].strip().upper() for row in _default_codes()}
+        except FileNotFoundError:
+            # 没有查表产物时，普通检索仍可独立运行。
+            known = set()
+        explicit.update(candidates & known)
+    return sorted(explicit)
+
+
 def lookup_code(code: str, model: str, codes: Sequence[dict] | None = None) -> dict | None:
     """按归一化双键查表，复用已加载快照的字典。普通行序列会临时建表。"""
     key = _normalized_key(code, model)
     if not all(key):
         return None
     if codes is None:
-        path = Path(DEFAULT_CODES_PATH).resolve()
-        stat = path.stat()
-        version = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-        codes = _load_default_codes(path, version)
+        codes = _default_codes()
     indexed = codes.index_by_key if isinstance(codes, _LoadedCodes) else _index_codes(codes)
     row = indexed.get(key)
     if row is None or _normalized_key(row["code"], row["model_code"]) != key:

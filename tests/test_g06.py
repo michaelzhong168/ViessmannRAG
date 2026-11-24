@@ -149,6 +149,33 @@ def test_l0_rejects_invalid_evidence(runtime, generation, field, value):
     assert result.citations == [] and generation == []
 
 
+@pytest.mark.parametrize("short_code", ["06", "0C", "A0", "CC"])
+def test_additional_g05_short_codes_take_l0(runtime, generation, short_code):
+    eus = [make_eu(10, f"{short_code}：记录故障显示。", ["B1KA"])]
+    write_eus(Path("data/eu.jsonl"), runtime + eus)
+    path = Path("data/codes.json")
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    rows.append(dict(code=short_code, model_code="B1KA", quote=eus[0].text_raw,
+                     page_no=10, eu_id=eus[0].eu_id, action_level="CAUTION"))
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    Path("data/fts5.db").unlink()
+    result = ask(f"{short_code.lower()} 怎么办", "b1ka", {})
+    assert result.error_code is None and generation == []
+    assert [citation.eu_id for citation in result.citations] == [eus[0].eu_id]
+    assert ask(short_code, "B1HA", {}).error_code == "NO_EVIDENCE"
+    assert ask(short_code, None, {}).error_code == "MODEL_REQUIRED"
+
+
+def test_decimal_and_unit_are_not_fault_codes(runtime, generation):
+    path = Path("data/codes.json")
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    rows.extend(dict(rows[1], code=code) for code in ("06", "CC"))
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    result = ask("水压 0.06 MPa，20 cc 正常吗", "B1KA", {})
+    assert result.error_code is None
+    assert len(generation) == 1
+
+
 def test_prompt_uses_verbatim_evidence(runtime):
     prompt = build_prompt("水压是多少", runtime[:1])
     eu = runtime[0]

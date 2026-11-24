@@ -11,7 +11,7 @@ from openai import APITimeoutError
 
 from config import DANGER_WORDS
 from generator import build_prompt, generate
-from lookup import lookup_code, verify_quotes
+from lookup import fault_codes_in_query, lookup_code, verify_quotes
 from retrieval import load_eu, retrieve
 from schema import Answer, Citation, EU, RequestCtx, _finite_number
 from storage import Storage
@@ -24,7 +24,6 @@ _ERROR_TEXT = {
     "INTERNAL": "暂时无法完成查询，请稍后重试。",
 }
 _STAGES = ("router", "retrieve", "generate", "validate")
-_FAULT_CODE = re.compile(r"(?<![A-Za-z0-9])[FfEe][0-9]{1,2}(?![A-Za-z0-9])")
 _MARKER = re.compile(r"\[([0-9]+)\]")
 _SENTENCE_END = re.compile(
     r"\n+|(?:[。！？!?；;]+|\.(?=[ \t]|$|\[))(?:[ \t]*\[[0-9]+\])*"
@@ -172,15 +171,15 @@ def ask(
     model = (model_code or "").strip().upper() or None
     try:
         folded_query = query.casefold()
-        codes = {match.upper() for match in _FAULT_CODE.findall(query)}
         if any(word in folded_query for word in DANGER_WORDS):
             finish_stage()
             return refuse("DANGER_REFUSAL")
+        codes = fault_codes_in_query(query)
         if codes:
             if model is None:
                 finish_stage()
                 return refuse("MODEL_REQUIRED")
-            rows = [lookup_code(code, model) for code in sorted(codes)]
+            rows = [lookup_code(code, model) for code in codes]
             if any(row and row["action_level"] == "P0_DANGER" for row in rows):
                 finish_stage()
                 return refuse("DANGER_REFUSAL")
