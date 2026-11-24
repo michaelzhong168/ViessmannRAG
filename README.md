@@ -28,6 +28,29 @@ demo_dir="$(mktemp -d)"
 
 命令输出 `doc_id=mini` 和 `page_count=2`，并在临时目录生成两张 PNG 和一份审计表。
 
+## 从说明书生成故障码表（G05）
+
+在仓库根目录按顺序构建版面、证据单元和故障码表。
+
+```bash
+python -m pipeline.layout --pdf data/raw/manual.pdf
+python -m pipeline.build_eu --layout data/layout.json --pdf data/raw/manual.pdf
+python -m pipeline.build_codes --model-scopes data/raw/model-scopes.json
+```
+
+若表格或章节已经明确适用型号，可省略 `--model-scopes`。对于型号只写在封面的手册，先对照原件核定型号和物理页范围，再提供如下 JSON。页段两端都包含在范围内，`doc_id` 与 PDF 文件名去掉扩展名后相同。
+
+```json
+{
+  "doc_id": "manual",
+  "scopes": [
+    {"first_page": 1, "last_page": 40, "model_codes": ["B1KA"]}
+  ]
+}
+```
+
+「原因｜排除故障」表中明确列出的故障码可拆成独立条目，保留原行证据。型号未核定的条目暂不上表。同一型号和代码的冲突证据会报出两个物理页，供核查。
+
 ## 可选的模型冒烟
 
 首次配置时运行 `cp .env.example .env`。在 `.env` 中填写有效的 `DASHSCOPE_API_KEY` 和百炼控制台可用的 `LLM_MODEL`，然后运行：

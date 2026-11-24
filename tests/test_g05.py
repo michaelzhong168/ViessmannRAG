@@ -18,9 +18,11 @@ if str(ROOT) not in sys.path:
 import config
 import lookup
 from lookup import load_codes, lookup_code, verify_quotes
-from pipeline.build_codes import build_codes, load_eus
-from pipeline.layout import load_layout
+from pipeline.build_codes import build_codes, load_eus, load_model_scopes
+from pipeline.build_eu import write_jsonl
+from pipeline.layout import Table, load_layout, write_layout
 from pipeline.parse import Document, Page, write_audit
+from schema import EU, eu_hash
 
 FIXTURES = ROOT / "tests" / "fixtures"
 CODES = FIXTURES / "codes_fixture.json"
@@ -181,11 +183,11 @@ def _prepare_run(tmp_path):
     return data, audit
 
 
-def _run_cli(tmp_path):
+def _run_cli(tmp_path, *args):
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     env.pop("DASHSCOPE_API_KEY", None)
     return subprocess.run(
-        [sys.executable, "-m", "pipeline.build_codes"], cwd=tmp_path,
+        [sys.executable, "-m", "pipeline.build_codes", *args], cwd=tmp_path,
         env=env, check=True, capture_output=True, text=True,
     )
 
@@ -225,3 +227,79 @@ def test_cli_empty_fault_table(tmp_path):
     assert "| code_count | 0 |" in text
     assert "| quote_verify_rate | N/A |" in text
     assert "| model_codes_detected |  |" in text
+
+
+def _grouped_source(page, action="记录显示。"):
+    header = ["原因", "排除故障"]
+    cells = ["显示故障代码 06、0C、CC、\nF04 或 E5 闪烁。", action]
+    row_bbox = [10, 20, 140, 35]
+    header_text = " | ".join(header)
+    table = Table(page, [10, 10, 140, 35], header, [cells], [row_bbox], "室内太冷", header_text)
+    text = header_text + "\n" + " | ".join(cells)
+    doc_id = "g05-fixture"
+    eu = EU(f"{doc_id}:p{page:03d}:00", doc_id, page, row_bbox, table.chapter, text, [],
+            eu_hash(doc_id, page, row_bbox, text), True)
+    return table, eu
+
+
+def _write_model_scopes(tmp_path, scopes, doc_id="g05-fixture"):
+    path = tmp_path / "model-scopes.json"
+    path.write_text(json.dumps({"doc_id": doc_id, "scopes": scopes}), encoding="utf-8")
+    return path
+
+
+def test_cli_grouped_rows_keep_original_evidence_and_model_scope(tmp_path):
+    data, _ = _prepare_run(tmp_path)
+    layout = load_layout(LAYOUT)
+    table1, eu1 = _grouped_source(1)
+    table2, eu2 = _grouped_source(2, "记录显示。\n提示\n仅记录故障码。")
+    table3, eu3 = _grouped_source(3, "拆机检查。")
+    # 一个普通原因行即便含有类似的编号，也不应生成代码。
+    unrelated = replace(table1, rows=[["参见图 F09。", "记录显示。"]])
+    layout.tables = [table3, table2, table1, unrelated]
+    write_layout(layout, data / "layout.json")
+    write_jsonl([eu1, eu2, eu3], data / "eu.jsonl")
+    path = _write_model_scopes(tmp_path, [{"first_page": 1, "last_page": 2,
+                                         "model_codes": ["B1KA", "L1P20-A1JF"]}])
+
+    assert "code_count=0" in _run_cli(tmp_path).stdout
+    assert "code_count=10" in _run_cli(tmp_path, "--model-scopes", str(path)).stdout
+    output = data / "codes.json"
+    snapshot = output.read_bytes()
+    rows = load_codes(output)
+    assert {row["code"] for row in rows} == {"06", "0C", "CC", "F04", "E5"}
+    assert {row["model_code"] for row in rows} == {"B1KA", "L1P20-A1JF"}
+    assert lookup_code("F4", "B1KA", rows) is None
+    assert lookup_code("F04", "B1HA", rows) is None
+    assert lookup_code("F04", "B1KA", rows) == {
+        "code": "F04", "model_code": "B1KA",
+        "quote": " | ".join(table2.rows[0]), "page_no": 2, "eu_id": eu2.eu_id,
+        "action_level": "SAFE",
+    }
+    assert verify_quotes(rows, [eu1, eu2, eu3])["rate"] == 1.0
+    _run_cli(tmp_path, "--model-scopes", str(path))
+    assert output.read_bytes() == snapshot
+
+
+def test_grouped_conflicting_evidence_fails(tmp_path):
+    table1, eu1 = _grouped_source(1)
+    table2, eu2 = _grouped_source(2, "拆机检查。")
+    path = _write_model_scopes(tmp_path, [{"first_page": 1, "last_page": 2,
+                                         "model_codes": ["B1KA"]}])
+    scopes = load_model_scopes(path, [eu1, eu2])
+    with pytest.raises(ValueError, match=r"DUPLICATE_CODE.*B1KA.*1.*2"):
+        build_codes([table1, table2], [eu1, eu2], scopes)
+
+
+def test_model_scopes_reject_wrong_document_and_overlapping_ranges(tmp_path):
+    _, eu = _grouped_source(1)
+    range_ = {"first_page": 1, "last_page": 2, "model_codes": ["B1KA"]}
+    path = _write_model_scopes(tmp_path, [range_], doc_id="another")
+    with pytest.raises(ValueError, match="doc_id"):
+        load_model_scopes(path, [eu])
+
+    path = _write_model_scopes(tmp_path, [
+        range_, {"first_page": 2, "last_page": 3, "model_codes": ["B1HA"]},
+    ])
+    with pytest.raises(ValueError, match="重叠"):
+        load_model_scopes(path, [eu])
