@@ -1,6 +1,6 @@
 # ViessmannRAG
 
-菲斯曼壁挂炉说明书问答项目。开发按[需求规格总纲](specs/semantic-rag.md)逐单元推进。当前单元 R01-01 负责从本地 PDF 加载 LlamaIndex `Document`。
+菲斯曼壁挂炉说明书问答项目。开发按[需求规格总纲](specs/semantic-rag.md)逐单元推进。当前单元 R01-02 从核定的本地 PDF 生成 LlamaIndex `TextNode`。
 
 ## 安装与离线验证
 
@@ -38,3 +38,18 @@ env -u DASHSCOPE_API_KEY PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest -q 
 命令输出文件指纹、总页数、核定物理页、操作类型和无文本的核定页。加载器在内存中保留原文及每页字符范围，供下一单元创建可追溯的 `TextNode`。本单元全程在本地执行，无模型调用。
 
 原始资料、配置密钥和评测记录留在本地。
+
+## R01-02 生成版面节点
+
+```python
+from manual_rag.nodes import build_nodes
+from manual_rag.source import load_document
+
+path = "data/raw/manual.pdf"
+document = load_document(path, control_type="按键式")
+nodes = build_nodes(document, path)
+```
+
+合订本沿用 `load_document(path, scopes_path=...)` 的页段配置。生成前会核对 PDF 指纹和来源文件名。每个节点的 `SOURCE` 关系含来源 Document ID、文件名和版本。节点元数据记录操作类型、从 1 开始的物理页码、版面单元类型、同页章节和 `bbox`。坐标使用 PyMuPDF 未旋转的页坐标，原点在左上，单位为 pt。对同一来源版本和版面规则重新生成时，节点 ID 可复现。
+
+规则使用 PDF 文本层识别标题、段落、编号步骤和线框表格。节点保留页内原文，表格行用制表符分隔单元格。未识别为线框表格的文字按正文提取。仅含图像的页面需要另行 OCR。
