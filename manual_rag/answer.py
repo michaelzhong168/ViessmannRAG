@@ -86,11 +86,12 @@ def _decode_answer(reply: str, nodes: list[TextNode]) -> AnswerResult:
             and "error_code" in payload
             and (code is None or isinstance(code, str) and code in _MODEL_CODES)
             and isinstance(indices, list)
-            and all(type(i) is int and 1 <= i <= len(nodes) for i in indices)
         ):
             if code == "safety_notice":
                 # 说明书片段可能列出正文省略的现场处置步骤。
                 return AnswerResult(answer.strip(), error_code=code)
+            if any(type(i) is not int or not 1 <= i <= len(nodes) for i in indices):
+                return AnswerResult("模型返回的回答或引用格式无效。", error_code="invalid_model_response")
             if code is None and not indices:
                 return AnswerResult("当前回答缺少可核对的说明书依据。", error_code="insufficient_evidence")
             citations = []

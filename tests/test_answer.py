@@ -64,7 +64,7 @@ def query_service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("question", "device_type", "code", "citations"), [
-    ("  闻到燃气味，还能打开暖气吗？  ", None, "safety_notice", [1]),
+    ("  闻到燃气味，还能打开暖气吗？  ", None, "safety_notice", [1, 999]),
     ("怎么打开暖气", None, "missing_control_type", []),
     ("怎么打开暖气", "触控式", "control_type_mismatch", []),
     ("屏幕显示 F02", "按键式", None, [1]),
