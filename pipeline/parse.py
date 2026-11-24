@@ -37,6 +37,14 @@ BASE_AUDIT_FIELDS = (
     "model_codes_detected",
 )
 
+#: 总纲 §2.11 规定的 G03 和 G04 扩展字段顺序。
+LAYOUT_EU_AUDIT_FIELDS = (
+    "chapter_count",
+    "table_count",
+    "eu_count",
+    "cross_chapter_eu_count",
+)
+
 #: 非 doc 派生字段的 G02 默认值；下游未传且旧报告没有时才使用。
 AUDIT_DEFAULTS = {
     "has_fault_code_table": "unknown",
@@ -332,7 +340,11 @@ def write_audit(
         }
     )
 
-    ordered = {key: merged[key] for key in BASE_AUDIT_FIELDS}
+    ordered = {
+        key: merged[key]
+        for key in (*BASE_AUDIT_FIELDS, *LAYOUT_EU_AUDIT_FIELDS)
+        if key in merged
+    }
     ordered.update(
         {key: merged[key] for key in sorted(merged) if key not in BASE_AUDIT_FIELDS}
     )
