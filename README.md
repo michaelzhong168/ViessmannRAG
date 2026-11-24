@@ -111,6 +111,6 @@ for citation in result.citations:
 
 “燃气壁挂炉”“天然气锅炉”等设备名称可用于普通问句，例如“菲斯曼燃气壁挂炉怎么打开暖气”。同一句出现漏气、接气、拆机等风险信号时转人工。
 
-风险规则在 [risk.py](manual_rag/risk.py) 中维护。直接风险用短语列表表示，受限部件的处置按同一句里的动作和对象判断。修改后用 [路由测试](tests/test_routing.py) 验证。报码的格式规则见 [fault_codes.py](manual_rag/fault_codes.py)。
+风险规则在 [risk.py](manual_rag/risk.py) 中维护。直接风险用短语列表表示，受限部件的处置按同一句里相邻的动作和对象判断。修改后用 [路由测试](tests/test_routing.py) 验证。报码的格式规则见 [fault_codes.py](manual_rag/fault_codes.py)。
 
 表格行可通过首列的故障码标签或表头识别。已有快照可继续识别行内标签，依赖表头识别的说明书可运行 `index` 更新快照。

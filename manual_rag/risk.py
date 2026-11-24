@@ -17,9 +17,12 @@ _RESTRICTED_PARTS = (
     "烟道", "烟管", "电源线", "保护", "联锁", "安全装置",
 )
 _SERVICE_ACTIONS = (
-    "调", "维修", "检修", "清理", "清洗", "换", "拆装",
+    "调", "调节", "调高", "调低", "维修", "检修", "清理", "清洗", "换", "更换", "拆装",
     "关闭", "禁用", "取消", "停用", "屏蔽", "绕过",
 )
+# 延用重构前的关联范围，避免同一句的日常操作与无关部件被拼在一起。
+_MAX_ACTION_GAP_BEFORE_PART = 10
+_MAX_ACTION_GAP_AFTER_PART = 12
 _MANUAL_IGNITION = ("手动", "强制", "打火机", "火柴")
 _LPG_FUELS = ("液化气", "液化石油气")
 _BOILER_NAMES = ("壁挂炉", "锅炉")
@@ -30,11 +33,23 @@ _ENGLISH_SIGNALS = ("gas leak", "gas wiring", "disassemble", "dismantle", "rewir
 _ENGLISH_ACTIONS = ("install", "adjust", "replace", "repair", "clean")
 _ENGLISH_TARGETS = ("boiler", "gas valve", "burner", "combustion chamber")
 _ENGLISH_WORD = re.compile(r"[a-z]+")
-_SENTENCE_END = re.compile(r"[。！？.!?；;]+")
+_SENTENCE_END = re.compile(r"[。！？.!?]+")
 
 
 def _contains(text: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in text for phrase in phrases)
+
+
+def _works_on_restricted_part(sentence: str) -> bool:
+    """检查受限部件前后的动作，保留部件名与动作的局部关联。"""
+    for part in _RESTRICTED_PARTS:
+        sections = sentence.split(part)
+        for before, after in zip(sections, sections[1:]):
+            for action in _SERVICE_ACTIONS:
+                earliest = max(0, len(before) - len(action) - _MAX_ACTION_GAP_BEFORE_PART)
+                if action in before[earliest:] or 0 <= after.find(action) <= _MAX_ACTION_GAP_AFTER_PART:
+                    return True
+    return False
 
 
 def requires_human_review(text: str) -> bool:
@@ -46,7 +61,7 @@ def requires_human_review(text: str) -> bool:
     for sentence in _SENTENCE_END.split(text):
         if "泄漏" in sentence and _contains(sentence, _BOILER_NAMES):
             return True
-        if _contains(sentence, _RESTRICTED_PARTS) and _contains(sentence, _SERVICE_ACTIONS):
+        if _works_on_restricted_part(sentence):
             return True
         if "点火" in sentence and _contains(sentence, _MANUAL_IGNITION):
             return True
