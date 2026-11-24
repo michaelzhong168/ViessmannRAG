@@ -45,7 +45,7 @@ def retrieve(
     if not parts or k <= 0:
         return []
     match = " OR ".join(f'"{part}"' for part in parts)
-    model = (model or "").strip().upper() or None
+    model = model.strip().upper() if model else None
     uri = Path(db_path).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as db:
         db.row_factory = sqlite3.Row

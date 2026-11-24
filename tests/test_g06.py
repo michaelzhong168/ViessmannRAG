@@ -292,6 +292,7 @@ def test_colloquial_query_finds_citable_evidence(
 
     evidence = retrieve(query, model="L1P20-A1JF")
     assert [eu.eu_id for eu in evidence] == [correct.eu_id]
+    assert retrieve(query, model=" ") == []
 
     def model_response(prompt):
         assert query in prompt and topic in prompt
