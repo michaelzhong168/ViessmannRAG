@@ -1,3 +1,4 @@
+# 用 SDK 替身覆盖模型客户端的配置和错误处理。
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ def provider(monkeypatch):
         client_config.update(kwargs)
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
+    # 禁止从本机 .env 读取密钥，只在 SDK 边界替换网络调用。
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only")
     monkeypatch.setenv("LLM_MODEL", "test-model")
@@ -27,6 +29,7 @@ def provider(monkeypatch):
 def test_model_probe_without_credentials(monkeypatch, capsys):
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    # 退出码区分凭证缺失和命令用法错误。
     assert llm.main(["question"]) == 1
     assert "请检查 DASHSCOPE_API_KEY" in capsys.readouterr().err
     assert llm.main([]) == 2
@@ -49,6 +52,7 @@ def test_defaults_and_explicit_model_priority(monkeypatch, provider):
     request, client_config = provider
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_TIMEOUT_S", raising=False)
+    # 保留夹具的环境模型，验证调用方传入的型号优先。
     assert llm.generate("question", model="explicit-model") == "reply"
     assert client_config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert request["model"] == "explicit-model"
