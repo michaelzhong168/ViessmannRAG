@@ -51,6 +51,22 @@ python -m pipeline.build_codes --model-scopes data/raw/model-scopes.json
 
 「原因｜排除故障」表中明确列出的故障码会拆成独立条目，保留原行证据。型号未核定的条目暂不上表。同一型号和代码有不同引文时，脚本会报出对应物理页。核对原页后，可以在 JSON 顶层加入 `"preferred_evidence": [{"alternate_hash": "...", "preferred_hash": "..."}]`，填入两条表格行 EU 的 `content_hash`。风险等级有分歧时，脚本仍会报错。
 
+## 说明书问答（G06）
+
+更新依赖后，用现有证据单元重建索引，生成中文分词检索所需的索引表。
+
+```bash
+uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m pipeline.build_index
+.venv/bin/python -m cli ask "怎么打开暖气" --model L1P20-A1JF
+```
+
+普通问答有相关证据时会调用百炼，需要按下节配置密钥。故障码按型号和原码查表。若使用含 `F04 / L1P20-A1JF` 条目的码表，可运行下列命令离线验证引用。
+
+```bash
+.venv/bin/python -m cli ask "F04 怎么办" --model L1P20-A1JF
+```
+
 ## 可选的模型冒烟
 
 首次配置时运行 `cp .env.example .env`。在 `.env` 中填写有效的 `DASHSCOPE_API_KEY` 和百炼控制台可用的 `LLM_MODEL`，然后运行：

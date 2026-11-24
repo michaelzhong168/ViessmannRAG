@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 
 from retrieval import DEFAULT_EU_PATH, DEFAULT_INDEX_PATH, load_eu
+from search_terms import word_tokens
 
 
 def build_index(
@@ -17,6 +18,7 @@ def build_index(
     with closing(sqlite3.connect(db_path)) as db, db:
         db.execute("BEGIN IMMEDIATE")
         db.execute("DROP TABLE IF EXISTS eu_fts")
+        db.execute("DROP TABLE IF EXISTS eu_words")
         db.execute("DROP TABLE IF EXISTS eu_meta")
         db.execute("""
             CREATE TABLE eu_meta (
@@ -38,6 +40,17 @@ def build_index(
             ),
         )
         db.execute("INSERT INTO eu_fts SELECT eu_id, text_raw FROM eu_meta ORDER BY eu_id")
+        db.execute(
+            "CREATE VIRTUAL TABLE eu_words USING "
+            "fts5(eu_id UNINDEXED, chapter, text, tokenize='unicode61')"
+        )
+        db.executemany(
+            "INSERT INTO eu_words VALUES (?, ?, ?)",
+            (
+                (eu.eu_id, " ".join(word_tokens(eu.chapter)), " ".join(word_tokens(eu.text_raw)))
+                for eu in sorted(evidence, key=lambda eu: eu.eu_id)
+            ),
+        )
     return len(evidence)
 
 

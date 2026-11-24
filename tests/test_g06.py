@@ -270,3 +270,83 @@ def test_cli_contract(runtime, generation, case, capsys):
         assert response["timing_ms"]["generate"] == response["timing_ms"]["validate"] == 0
     if case["expected_error_code"] == "DANGER_REFUSAL":
         assert response["timing_ms"]["retrieve"] == 0
+
+
+@pytest.mark.parametrize(("query", "topic", "page", "quote"), [
+    ("如何复位", "复位", 16, "面板显示复位提示。"),
+    ("如何排除故障", "排除故障", 20, "排除故障时先核对屏幕提示。"),
+    ("怎么打开暖气", "供暖运行", 24, "运行状态 II 表示常规供暖运行。"),
+    ("在哪里看水压呢", "水压", 32, "屏幕显示当前水压。"),
+])
+def test_colloquial_query_finds_citable_evidence(
+    runtime, monkeypatch, query, topic, page, quote,
+):
+    correct = make_eu(page, quote, ["L1P20-A1JF"])
+    wrong_model = [
+        make_eu(number, quote, ["L1P24-A1JF"])
+        for number in range(50, 57)
+    ]
+    decoy = make_eu(40, "如何加入会员？怎么打开应用？显示屏支持多种语言。")
+    write_eus(Path("data/eu.jsonl"), [decoy, *wrong_model, correct])
+    build_index()
+
+    evidence = retrieve(query, model="L1P20-A1JF")
+    assert [eu.eu_id for eu in evidence] == [correct.eu_id]
+
+    def model_response(prompt):
+        assert query in prompt and topic in prompt
+        assert quote in prompt
+        assert decoy.text_raw not in prompt
+        return f"{quote.removesuffix('。')}[1]。"
+
+    monkeypatch.setattr(llm, "generate", model_response)
+    result = ask(query, "L1P20-A1JF", {})
+    assert result.error_code is None
+    citation, = result.citations
+    assert (citation.eu_id, citation.page_no, citation.bbox, citation.quote) == (
+        correct.eu_id, page, BBOX, quote,
+    )
+
+
+def test_segmented_index_rebuild_is_repeatable_and_legacy_still_reads(runtime):
+    eus = [make_eu(16, "面板显示复位提示。"), make_eu(28, "故障后请查看复位选项。")]
+    write_eus(Path("data/eu.jsonl"), eus)
+    build_index()
+    first = retrieve("如何复位")
+    assert {eu.eu_id for eu in first} == {eu.eu_id for eu in eus}
+    build_index()
+    assert retrieve("如何复位") == first
+    with sqlite3.connect("data/fts5.db") as db:
+        db.execute("DROP TABLE eu_words")
+    assert retrieve("复位提示") == eus[:1]
+    assert retrieve("如何复位") == []
+
+
+def test_heating_expansion_is_scoped_to_match_user_intent(runtime, generation):
+    heating = make_eu(23, "按下模式键后再确认。", ["L1P20-A1JF"])
+    heating.chapter = "设置供暖和热水的运行程序"
+    write_eus(Path("data/eu.jsonl"), [heating])
+    build_index()
+
+    for query in ("暖气怎么开", "请问怎么打开暖气？"):
+        assert retrieve(query, model="L1P20-A1JF") == [heating]
+    for query in ("怎么关闭暖气", "怎么打开汽车暖气", "暖气怎么打开后自动关机"):
+        assert retrieve(query, model="L1P20-A1JF") == []
+    assert ask("怎么打开暖气并接线", "L1P20-A1JF", {}).error_code == "DANGER_REFUSAL"
+    assert generation == []
+
+
+def test_word_fallback_does_not_match_only_one_generic_term(runtime):
+    write_eus(Path("data/eu.jsonl"), [make_eu(23, "请核对室内供暖温度。")])
+    build_index()
+
+    assert retrieve("怎么给火星的外星生命供暖") == []
+
+
+def test_generic_troubleshooting_expansion_finds_fault_display(runtime):
+    eu = make_eu(16, "请先查看屏幕上的故障信息。")
+    write_eus(Path("data/eu.jsonl"), [eu])
+    build_index()
+
+    assert retrieve("如何排除故障") == [eu]
+    assert retrieve("如何排除汽车故障") == []
