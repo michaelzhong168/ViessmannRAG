@@ -25,39 +25,39 @@ DEFAULT_LAYOUT_PATH = "data/layout.json"
 
 @dataclass
 class Heading:
-    text: str
-    level: int
-    page_no: int
-    bbox: list[float]
-    font_size: float
+    text: str  # 标题原文
+    level: int  # 标题层级，1 为最高级，最多 3 级
+    page_no: int  # PDF 物理页码，从 1 开始
+    bbox: list[float]  # 页图方向的标题框 [x0, y0, x1, y1]，左上为原点，单位 pt
+    font_size: float  # 提取的原始字号，分级时使用 round(font_size, 1)
 
 
 @dataclass
 class Table:
-    page_no: int
-    bbox: list[float]
-    header: list[str]
-    rows: list[list[str]]
-    row_bboxes: list[list[float]]
-    chapter: str
-    header_text: str
+    page_no: int  # PDF 物理页码，从 1 开始
+    bbox: list[float]  # 页图方向的整表框 [x0, y0, x1, y1]，左上为原点，单位 pt
+    header: list[str]  # 表格首行的单元格，按列顺序保存
+    rows: list[list[str]]  # 表头下的数据行，各行按表头列顺序保存，空单元格为 ""
+    row_bboxes: list[list[float]]  # 与 rows 按索引一一对应，坐标格式同 bbox
+    chapter: str  # 最近的前置标题，无前置标题时为 "(未分章)"
+    header_text: str  # 由 " | ".join(header) 得到的表头文本，随 JSON 保存
 
 
 @dataclass
 class Block:
-    page_no: int
-    bbox: list[float]
-    text: str
-    font_size: float
-    chapter: str
+    page_no: int  # PDF 物理页码，从 1 开始
+    bbox: list[float]  # 页图方向的正文块框 [x0, y0, x1, y1]，左上为原点，单位 pt
+    text: str  # 正文原文，保留行界
+    font_size: float  # 块中有文本的片段使用的最大字号
+    chapter: str  # 最近的前置标题，无前置标题时为 "(未分章)"
 
 
 @dataclass
 class Layout:
-    headings: list[Heading]
-    tables: list[Table]
-    body_blocks: list[Block]
-    header_footer_removed: int
+    headings: list[Heading]  # 标题列表，按页码、纵坐标、横坐标、文本排序
+    tables: list[Table]  # 表格列表，按页码、纵坐标、横坐标、表头文本排序
+    body_blocks: list[Block]  # 正文块列表，按页码、纵坐标、横坐标、文本排序
+    header_footer_removed: int  # 按页眉页脚规则剔除的文本块数量
 
 
 def _page_bbox(
