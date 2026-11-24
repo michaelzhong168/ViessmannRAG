@@ -90,3 +90,30 @@ def validate_eu(eu: EU | Mapping[str, object]) -> list[str]:
     if type(data.get("is_table_row")) is not bool:
         errors.append("is_table_row 必须是 bool")
     return errors
+
+
+@dataclass
+class Citation:
+    n: int
+    eu_id: str
+    page_no: int
+    bbox: list[float]
+    quote: str
+    page_url: str
+
+
+@dataclass
+class Answer:
+    trace_id: str
+    answer: str
+    citations: list[Citation]
+    error_code: str | None
+    timing_ms: dict[str, int]
+
+
+@dataclass
+class RequestCtx:
+    platform: str = ""
+    user_hash: str = ""
+    session_id: str = ""
+    trace_id: str = ""

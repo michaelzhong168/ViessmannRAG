@@ -1,0 +1,3 @@
+{"id":"pressure","query":"水压 0.15 MPa 正常吗","model_code":"B1KA","expected_error_code":null,"expected_eu_ids":["manual:p007:01"],"expected_pages":[7]}
+{"id":"missing","query":"量子纠缠","model_code":"B1KA","expected_error_code":"NO_EVIDENCE","expected_eu_ids":[],"expected_pages":[]}
+{"id":"danger","query":"E5 怎么办","model_code":"B1KA","expected_error_code":"DANGER_REFUSAL","expected_eu_ids":[],"expected_pages":[]}
