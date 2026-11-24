@@ -222,6 +222,13 @@ def test_assemble_uses_only_current_evidence(runtime):
     assert not validate(resp, eus)[0]
 
 
+def test_assemble_ignores_only_out_of_range_sentence(runtime):
+    body, dropped = assemble("水压为 0.15 MPa[1].虚构内容[9].“查阅说明书。”[1]", runtime[:1])
+    assert body["answer"].splitlines() == ["水压为 0.15 MPa[1].", "“查阅说明书。”[1]"]
+    assert [citation.eu_id for citation in body["citations"]] == [runtime[0].eu_id]
+    assert dropped == ["虚构内容[9]."]
+
+
 def test_invalid_candidate_refuses(runtime, monkeypatch):
     monkeypatch.setattr(llm, "generate", lambda prompt: '{"answer":"伪造[1]。"}\n无出处。错编号[9]。')
     result = ask("水压 0.15 MPa", "B1KA", RequestCtx())

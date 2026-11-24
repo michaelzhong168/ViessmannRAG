@@ -26,7 +26,9 @@ _ERROR_TEXT = {
 _STAGES = ("router", "retrieve", "generate", "validate")
 _MARKER = re.compile(r"\[([0-9]+)\]")
 _SENTENCE_END = re.compile(
-    r"\n+|(?:[。！？!?；;]+|\.(?=[ \t]|$|\[))(?:[ \t]*\[[0-9]+\])*"
+    r"\n+|"
+    r"(?:[。！？!?；;]+|(?<=\])\.|\.(?=[ \t\[”’」』）】]|$))"
+    r"[”’」』）】]*(?:[ \t]*\[[0-9]+\])*"
 )
 _JSON_START = re.compile(r'\{|\[\s*(?=\{|"|\[)')
 
