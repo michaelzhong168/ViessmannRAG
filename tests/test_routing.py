@@ -8,6 +8,7 @@ import pytest
 from llama_index.core import VectorStoreIndex
 from llama_index.core.embeddings import MockEmbedding
 
+from manual_rag.fault_codes import codes_in_table_row
 from manual_rag.index import load_index
 from manual_rag.nodes import build_nodes
 from manual_rag.routing import QuestionRouter
@@ -208,3 +209,9 @@ def test_risk_branches_return_the_same_fixed_notice(snapshot):
         "菲斯曼设备服务\n"
         "现场安全后，如需检查壁挂炉，请拨打 400 650 8850。"
     )
+
+
+def test_plural_fault_codes_label_contains_no_code(snapshot):
+    """英文复数标签末尾的 s 不是故障码。"""
+    assert codes_in_table_row("fault codes", "") == []
+    assert QuestionRouter(load_index(snapshot)).route("Fault codes", "按键式").fault_codes == ()
