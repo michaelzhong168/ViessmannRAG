@@ -1,7 +1,6 @@
 """校验核定页段，并从本地 PDF 加载一个 LlamaIndex Document。"""
 import argparse
 import json
-import re
 import sys
 from hashlib import sha256
 from pathlib import Path
@@ -9,11 +8,11 @@ from pathlib import Path
 import pymupdf
 from llama_index.core.schema import Document
 
-_MODEL_CODE = re.compile(r"[A-Z0-9]+(?:[-_][A-Z0-9]+)*")
+CONTROL_TYPES = ("旋钮式", "按键式", "触控式")
 _PAGE_SEPARATOR = "\n"
 
 
-def _approved_scopes(path: Path, doc_id: str, page_count: int) -> list[tuple[int, int, list[str]]]:
+def _approved_scopes(path: Path, doc_id: str, page_count: int) -> list[tuple[int, int, str]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("doc_id") != doc_id:
         raise ValueError("核定文件的 doc_id 须与 PDF 文件名去掉扩展名后相同")
@@ -25,16 +24,12 @@ def _approved_scopes(path: Path, doc_id: str, page_count: int) -> list[tuple[int
     for entry in ranges:
         if not isinstance(entry, dict):
             raise ValueError("核定页段须为 JSON 对象")
-        first, last, models = (entry.get(key) for key in ("first_page", "last_page", "model_codes"))
+        first, last, control_type = (entry.get(key) for key in ("first_page", "last_page", "control_type"))
         if type(first) is not int or type(last) is not int or not 1 <= first <= last <= page_count:
             raise ValueError(f"核定页段须位于 PDF 物理页 1–{page_count}")
-        if (
-            not isinstance(models, list) or not models
-            or any(not isinstance(code, str) or not _MODEL_CODE.fullmatch(code) for code in models)
-            or len(set(models)) != len(models)
-        ):
-            raise ValueError("核定页段须有非空、唯一的大写型号列表")
-        scopes.append((first, last, models))
+        if control_type not in CONTROL_TYPES:
+            raise ValueError("核定页段的 control_type 须为旋钮式、按键式或触控式")
+        scopes.append((first, last, control_type))
 
     scopes.sort(key=lambda scope: scope[0])
     if any(current[1] >= following[0] for current, following in zip(scopes, scopes[1:])):
@@ -42,8 +37,20 @@ def _approved_scopes(path: Path, doc_id: str, page_count: int) -> list[tuple[int
     return scopes
 
 
-def load_document(pdf_path: str | Path, scopes_path: str | Path) -> Document:
-    """从批准的物理页提取文本，记录每页在 Document.text 中的字符范围。"""
+def load_document(
+    pdf_path: str | Path,
+    scopes_path: str | Path | None = None,
+    *,
+    control_type: str | None = None,
+) -> Document:
+    """按核定 JSON 页段或整本操作类型加载一份 PDF。
+
+    页号从 1 开始，字符区间可直接切片 Document.text。声明或页段无效时抛出 ValueError。
+    """
+    if (scopes_path is None) == (control_type is None):
+        raise ValueError("请选择整本操作类型或核定页段文件")
+    if control_type is not None and control_type not in CONTROL_TYPES:
+        raise ValueError("操作类型须为旋钮式、按键式或触控式")
     source = Path(pdf_path)
     contents = source.read_bytes()
     doc_id = source.stem
@@ -54,12 +61,18 @@ def load_document(pdf_path: str | Path, scopes_path: str | Path) -> Document:
         if not pdf.is_pdf or pdf.needs_pass:
             raise ValueError("请输入可直接读取的 PDF 文件")
         page_count = len(pdf)
-        for first_page, last_page, models in _approved_scopes(Path(scopes_path), doc_id, page_count):
+        if page_count == 0:
+            raise ValueError("PDF 至少须有一页")
+        scopes = (
+            _approved_scopes(Path(scopes_path), doc_id, page_count)
+            if scopes_path is not None else [(1, page_count, control_type)]
+        )
+        for first_page, last_page, page_type in scopes:
             for page_no in range(first_page, last_page + 1):
                 text = pdf[page_no - 1].get_text()
                 parts.append(text)
                 pages.append({
-                    "page_no": page_no, "model_codes": list(models),
+                    "page_no": page_no, "control_type": page_type,
                     "start_char_idx": offset, "end_char_idx": offset + len(text),
                 })
                 offset += len(text) + len(_PAGE_SEPARATOR)
@@ -79,10 +92,12 @@ def load_document(pdf_path: str | Path, scopes_path: str | Path) -> Document:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdf", type=Path)
-    parser.add_argument("--scopes", type=Path, required=True)
+    scope = parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--scopes", type=Path, help="按物理页段声明操作类型")
+    scope.add_argument("--control-type", choices=CONTROL_TYPES, help="声明整本说明书的操作类型")
     args = parser.parse_args(argv)
     try:
-        document = load_document(args.pdf, args.scopes)
+        document = load_document(args.pdf, args.scopes, control_type=args.control_type)
     except (OSError, ValueError, pymupdf.FileDataError) as exc:
         print(f"加载失败：{exc}", file=sys.stderr)
         return 2
@@ -93,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         "pdf_version": metadata["pdf_version"],
         "page_count": metadata["page_count"],
         "approved_pages": [page["page_no"] for page in metadata["pages"]],
-        "model_codes": sorted({model for page in metadata["pages"] for model in page["model_codes"]}),
+        "control_types": sorted({page["control_type"] for page in metadata["pages"]}),
         "pages_without_text": [
             page["page_no"] for page in metadata["pages"]
             if not document.text[page["start_char_idx"]:page["end_char_idx"]].strip()
