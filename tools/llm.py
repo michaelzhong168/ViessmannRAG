@@ -1,11 +1,4 @@
-"""G01 · 全项目唯一的模型调用入口。
-
-业务层只允许经由本模块调用模型；换厂商只改 ``LLM_BASE_URL`` / ``LLM_MODEL``
-两行环境变量，业务代码不动。
-
-注意：本模块**导入期不读环境变量、不构造 client**——缺少 ``DASHSCOPE_API_KEY``
-时也必须能 import 成功，否则 mock 测试无法加载模块（规格 v1.2 FR-004）。
-"""
+"""百炼 OpenAI 兼容客户端与文本生成入口。"""
 
 from __future__ import annotations
 
@@ -16,7 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
 
-#: system prompt 单独成常量（自旧版 B2 契约保留，G01 测试断言其内容）
 SYSTEM_PROMPT = (
     "你是菲斯曼壁挂炉说明书的问答助手。只依据用户提供的原文回答问题，"
     "不编造原文中没有的内容。"
