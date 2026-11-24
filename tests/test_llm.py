@@ -59,7 +59,7 @@ def test_defaults_and_explicit_model_priority(monkeypatch, provider):
     assert llm.generate("question", model="explicit-model") == "reply"
     assert client_config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert request["model"] == "explicit-model"
-    assert request["timeout"] == 10
+    assert request["timeout"] == 35
     assert request["temperature"] == 0.1 and request["max_tokens"] == 400
 
 

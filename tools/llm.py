@@ -16,7 +16,7 @@ SYSTEM_PROMPT = (
 
 #: 非模型常量：允许作为缺省值，不属于「写死模型名」
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_TIMEOUT_S = "10"
+DEFAULT_TIMEOUT_S = "35"
 TEMPERATURE = 0.1
 MAX_TOKENS = 400
 

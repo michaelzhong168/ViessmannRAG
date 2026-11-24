@@ -93,6 +93,7 @@ for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
 ## R01-06 说明书问答
 
 在 `.env` 配置 `LLM_MODEL`，并沿用建库时配置的 `EMBED_MODEL`。
+百炼请求默认超时为 35 秒。已有 `.env` 若仍设置 `LLM_TIMEOUT_S=10`，请更新为 `LLM_TIMEOUT_S=35`。终端导出的同名变量优先。
 
 ```bash
 .venv/bin/python -m manual_rag ask "菲斯曼壁挂炉怎么打开暖气" --control-type 按键式
