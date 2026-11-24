@@ -113,6 +113,9 @@ def test_query_is_cleaned_and_uses_or(runtime):
     ("F4 怎么办", None, "MODEL_REQUIRED"),
     ("F4 怎么接线", None, "DANGER_REFUSAL"),
     ("F4 和 E5", "B1KA", "DANGER_REFUSAL"),
+    ("显示 F4-E5 出现报警", "B1KA", "DANGER_REFUSAL"),
+    ("显示 F4/E5 出现报警", "B1KA", "DANGER_REFUSAL"),
+    ("显示故障码：F4-E5", "B1KA", "DANGER_REFUSAL"),
 ])
 def test_l0_paths(runtime, generation, query, model, error):
     # 移除索引。任何错误进入 FTS 的路由都会暴露为 INTERNAL。
@@ -164,6 +167,17 @@ def test_additional_g05_short_codes_take_l0(runtime, generation, short_code):
     assert [citation.eu_id for citation in result.citations] == [eus[0].eu_id]
     assert ask(short_code, "B1HA", {}).error_code == "NO_EVIDENCE"
     assert ask(short_code, None, {}).error_code == "MODEL_REQUIRED"
+
+
+@pytest.mark.parametrize("first_code", ["F4", "06"])
+def test_dangerous_letter_code_after_other_code(runtime, generation, first_code):
+    path = Path("data/codes.json")
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    rows.extend([dict(rows[0], code="06"), dict(rows[1], code="CC")])
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    result = ask(f"{first_code} CC 怎么办", "B1KA", {})
+    assert result.error_code == "DANGER_REFUSAL"
+    assert result.citations == [] and generation == []
 
 
 def test_decimal_and_unit_are_not_fault_codes(runtime, generation):
