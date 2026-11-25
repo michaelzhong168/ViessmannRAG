@@ -31,7 +31,6 @@ class BailianEmbedding(BaseEmbedding):
             self._client = llm._get_client()
         response = self._client.embeddings.create(
             model=self.model_name, input=texts, encoding_format="float",
-            timeout=llm._resolve_timeout(),
         )
         rows = sorted(response.data, key=lambda row: row.index)
         if [row.index for row in rows] != list(range(len(texts))):

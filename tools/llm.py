@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,7 +17,6 @@ SYSTEM_PROMPT = (
 
 #: 非模型常量：允许作为缺省值，不属于「写死模型名」
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_TIMEOUT_S = "10"
 TEMPERATURE = 0.1
 MAX_TOKENS = 400
 
@@ -38,7 +38,7 @@ def _get_client() -> OpenAI:
     if not api_key:
         raise RuntimeError(MISSING_KEY_HINT)
     base_url = os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL
-    return OpenAI(api_key=api_key, base_url=base_url)
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=None)
 
 
 def _resolve_model(model: str | None) -> str:
@@ -49,34 +49,54 @@ def _resolve_model(model: str | None) -> str:
     return name
 
 
-def _resolve_timeout() -> float:
-    raw = os.environ.get("LLM_TIMEOUT_S") or DEFAULT_TIMEOUT_S
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"LLM_TIMEOUT_S 不是合法数字：{raw!r}") from exc
+def _messages(prompt: str, system_prompt: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
 
 
-def generate(prompt: str, model: str | None = None) -> str:
-    """唯一模型入口：固定 temperature / max_tokens / timeout，返回纯文本。"""
+def generate(
+    prompt: str, model: str | None = None, *, system_prompt: str = SYSTEM_PROMPT,
+) -> str:
+    """请求完整回复并返回纯文本。"""
     client = _get_client()
     model_name = _resolve_model(model)
 
     response = client.chat.completions.create(
         model=model_name,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        messages=_messages(prompt, system_prompt),
         temperature=TEMPERATURE,
         max_tokens=MAX_TOKENS,
-        timeout=_resolve_timeout(),
     )
 
     content = response.choices[0].message.content
     if not content:
         raise RuntimeError(f"模型返回空内容（model={model_name}）")
     return content
+
+
+def stream(prompt: str, *, system_prompt: str = SYSTEM_PROMPT) -> Iterator[str]:
+    """逐块返回回复正文，断流或截断时抛出服务异常。"""
+    client = _get_client()
+    completed = False
+    with client.chat.completions.create(
+        model=_resolve_model(None),
+        messages=_messages(prompt, system_prompt),
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
+        stream=True,
+    ) as chunks:
+        for chunk in chunks:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.delta.content:
+                yield choice.delta.content
+            if choice.finish_reason == "stop":
+                completed = True
+    if not completed:
+        raise OpenAIError("模型回复流未完整结束")
 
 
 def main(argv: list[str] | None = None) -> int:

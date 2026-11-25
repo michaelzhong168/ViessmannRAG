@@ -36,15 +36,17 @@ def test_model_probe_without_credentials(monkeypatch, capsys):
     assert llm.main([]) == 2
 
 
-def test_generate_uses_configured_provider_and_timeout(monkeypatch, provider):
-    """验证生成请求使用配置的服务地址、凭证、模型、超时和消息。"""
+def test_generate_uses_configured_provider_without_timeout(monkeypatch, provider):
+    """验证生成使用配置的服务地址、凭证和模型，客户端关闭请求超时。"""
     request, client_config = provider
     monkeypatch.setenv("LLM_BASE_URL", "https://example.invalid/v1")
     monkeypatch.setenv("LLM_TIMEOUT_S", "3")
     assert llm.generate("question") == "reply"
-    assert client_config == {"api_key": "test-only", "base_url": "https://example.invalid/v1"}
+    assert client_config == {
+        "api_key": "test-only", "base_url": "https://example.invalid/v1", "timeout": None,
+    }
     assert request["model"] == "test-model"
-    assert request["timeout"] == 3
+    assert "timeout" not in request
     assert request["messages"] == [
         {"role": "system", "content": llm.SYSTEM_PROMPT}, {"role": "user", "content": "question"},
     ]
@@ -59,7 +61,7 @@ def test_defaults_and_explicit_model_priority(monkeypatch, provider):
     assert llm.generate("question", model="explicit-model") == "reply"
     assert client_config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert request["model"] == "explicit-model"
-    assert request["timeout"] == 10
+    assert client_config["timeout"] is None
     assert request["temperature"] == 0.1 and request["max_tokens"] == 400
 
 
