@@ -52,13 +52,15 @@ def query_service(tmp_path, monkeypatch):
                 for i, text in enumerate(inputs)
             ]})
         assert request.url.path.endswith("/chat/completions")
+        assert body["stream"] is True
         requests.append(body)
         response = responses.pop(0)
         if isinstance(response, Exception):
             raise response
-        if body.get("stream"):
-            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Events(response))
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(response)}}]})
+        if isinstance(response, dict):
+            metadata = {key: value for key, value in response.items() if key != "answer"}
+            response = [json.dumps(metadata) + "\n", response["answer"], None]
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Events(response))
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
         def make_client(**kwargs):
@@ -197,12 +199,16 @@ def test_stream_displays_body_before_next_event_and_resolves_citations(
 
 
 def test_json_option_keeps_machine_output_on_terminal(query_service, capsys, monkeypatch):
-    """显式 JSON 优先于终端自动流式模式。"""
+    """显式 JSON 等待同一个模型流结束，再输出完整机器可读结果。"""
     path, requests, responses = query_service
-    responses.append({"answer": "回答", "citations": [1], "error_code": None})
+
+    def check_buffered():
+        assert capsys.readouterr().out == ""
+
+    responses.append(['{"citations":[1],"error_code":null}\n回', check_buffered, "答", None])
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     assert main(["ask", "怎么打开暖气", "--index", str(path), "--json"]) == 0
-    assert not requests[0].get("stream")
+    assert requests[0]["stream"] is True
     assert json.loads(capsys.readouterr().out)["answer"] == "回答"
 
 
