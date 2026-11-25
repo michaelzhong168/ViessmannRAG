@@ -1,6 +1,7 @@
 """用合成说明书和百炼 HTTP 替身验证问答入口。"""
 
 import json
+import sys
 
 import httpx
 import pymupdf
@@ -12,12 +13,34 @@ from manual_rag.index import build_index
 from tools import llm
 
 
+class _Events(httpx.SyncByteStream):
+    """用可逐块推进的 SSE 替换百炼网络响应。"""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __iter__(self):
+        for chunk in self.chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            if callable(chunk):
+                chunk()
+                continue
+            choice = {
+                "index": 0,
+                "delta": {"content": chunk},
+                "finish_reason": "stop" if chunk is None else None,
+            }
+            yield f"data: {json.dumps({'choices': [choice]})}\n\n".encode()
+
+
 @pytest.fixture
 def query_service(tmp_path, monkeypatch):
     requests = []
     responses = []
 
     def respond(request):
+        assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"))
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
             inputs = body["input"] if isinstance(body["input"], list) else [body["input"]]
@@ -33,6 +56,8 @@ def query_service(tmp_path, monkeypatch):
         response = responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if body.get("stream"):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Events(response))
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(response)}}]})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
@@ -144,3 +169,61 @@ def test_model_receives_remaining_steps_from_same_page_and_section(query_service
     output = json.loads(capsys.readouterr().out)
     assert output["citations"][0]["quote"] == "2. Confirm mode."
     assert output["citations"][0]["page_no"] == 1
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_stream_displays_body_before_next_event_and_resolves_citations(
+    query_service, capsys, monkeypatch, explicit,
+):
+    """校验跨块的头部，首段正文在下一事件到达前已输出。"""
+    path, requests, responses = query_service
+
+    def check_visible():
+        assert capsys.readouterr().out == "先选择"
+
+    responses.append(['{"citations":[1],', '"error_code":null}\n先选择', check_visible, "模式。", None])
+    argv = ["ask", "怎么打开暖气", "--index", str(path)]
+    if explicit:
+        argv.append("--stream")
+    else:
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    assert main(argv) == 0
+    assert requests[0]["stream"] is True
+    body, label, citation = capsys.readouterr().out.splitlines()
+    assert body == "模式。"
+    assert label == "引用"
+    assert json.loads(citation)["page_no"] == 1
+    assert json.loads(citation)["quote"] == "Button instructions"
+
+
+def test_json_option_keeps_machine_output_on_terminal(query_service, capsys, monkeypatch):
+    """显式 JSON 优先于终端自动流式模式。"""
+    path, requests, responses = query_service
+    responses.append({"answer": "回答", "citations": [1], "error_code": None})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    assert main(["ask", "怎么打开暖气", "--index", str(path), "--json"]) == 0
+    assert not requests[0].get("stream")
+    assert json.loads(capsys.readouterr().out)["answer"] == "回答"
+
+
+@pytest.mark.parametrize(("indices", "expected_exit"), [([], 0), ([999], 1)])
+def test_stream_rejects_missing_or_fabricated_citations(query_service, capsys, indices, expected_exit):
+    """无有效引用时，拒答发生在显示正文之前。"""
+    path, _, responses = query_service
+    header = json.dumps({"citations": indices, "error_code": None})
+    responses.append([header + "\n未核实步骤。", None])
+    assert main(["ask", "怎么打开暖气", "--index", str(path), "--stream"]) == expected_exit
+    out, err = capsys.readouterr()
+    assert "未核实步骤" not in out + err
+    assert "引用\n" not in out
+
+
+@pytest.mark.parametrize("tail", [[], [httpx.ReadError("stream disconnected")]])
+def test_stream_interruption_exits_nonzero_without_citations(query_service, capsys, tail):
+    """连接中断或缺少结束标记时，提示失败且不输出引用。"""
+    path, _, responses = query_service
+    responses.append(['{"citations":[1],"error_code":null}\n部分正文', *tail])
+    assert main(["ask", "怎么打开暖气", "--index", str(path), "--stream"]) == 1
+    out, err = capsys.readouterr()
+    assert out == "部分正文\n"
+    assert "模型服务请求失败" in err

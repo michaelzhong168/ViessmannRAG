@@ -93,11 +93,13 @@ for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
 ## R01-06 说明书问答
 
 在 `.env` 配置 `LLM_MODEL`，并沿用建库时配置的 `EMBED_MODEL`。
-百炼请求默认超时为 35 秒。已有 `.env` 若仍设置 `LLM_TIMEOUT_S=10`，请更新为 `LLM_TIMEOUT_S=35`。终端导出的同名变量优先。
+客户端不设百炼请求超时。等待期间可按 Ctrl+C 取消。
 
 ```bash
 .venv/bin/python -m manual_rag ask "菲斯曼壁挂炉怎么打开暖气" --control-type 按键式
 .venv/bin/python -m manual_rag ask "屏幕显示 F02"
 ```
+
+在终端运行时，正文逐段显示，结束后列出引用。重定向或管道默认输出完整 JSON。可用 `--stream` 或 `--json` 显式选择输出方式。
 
 操作类型可选。问答检索将语义候选、原问句和用户提供的类型一起交给模型。召回操作步骤时，补充同一说明书同页同节的其他步骤。模型回答危险、类型适配和报码问题，程序从模型选用的片段回填来源、物理页、坐标和逐字引用。可用 `--index` 选择已发布的索引、`--top-k` 调整初次检索的候选数。

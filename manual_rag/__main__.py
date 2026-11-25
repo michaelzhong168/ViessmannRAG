@@ -29,17 +29,45 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--control-type", help="将已知的设备操作类型提供给模型")
     query.add_argument("--index", type=Path, default=DEFAULT_INDEX, help="已发布的索引文件")
     query.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="送给模型的候选片段数量")
+    output = query.add_mutually_exclusive_group()
+    output.add_argument("--stream", action="store_true", help="逐块输出正文，结束后显示引用")
+    output.add_argument("--json", action="store_true", help="一次性输出 JSON")
     args = parser.parse_args(argv)
 
     pymupdf.no_recommend_layout()
     if args.command == "ask":
+        streaming = args.stream or (not args.json and sys.stdout.isatty())
+        emitted = False
+
+        def write_delta(chunk: str) -> None:
+            nonlocal emitted
+            print(chunk, end="", flush=True)
+            emitted = True
+
         try:
-            result = ask(load_index(args.index), args.question, args.control_type, top_k=args.top_k)
+            result = ask(
+                load_index(args.index), args.question, args.control_type,
+                top_k=args.top_k, on_delta=write_delta if streaming else None,
+            )
+        except KeyboardInterrupt:
+            print("\n问答已取消。" if emitted else "问答已取消。", file=sys.stderr)
+            return 130
         except (OSError, ValueError, RuntimeError) as exc:
             print(f"问答失败：{exc}", file=sys.stderr)
             return 1
-        print(json.dumps(asdict(result), ensure_ascii=False))
-        return int(result.error_code in {"model_timeout", "model_service_error", "invalid_model_response"})
+        failed = result.error_code in {"model_timeout", "model_service_error", "invalid_model_response"}
+        if streaming:
+            if emitted:
+                print()
+            if failed or not emitted:
+                print(result.answer, file=sys.stderr if failed else sys.stdout)
+            if result.citations:
+                print("引用")
+                for citation in result.citations:
+                    print(json.dumps(asdict(citation), ensure_ascii=False))
+        else:
+            print(json.dumps(asdict(result), ensure_ascii=False))
+        return int(failed)
 
     try:
         count = build_index(

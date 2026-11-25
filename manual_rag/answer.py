@@ -1,8 +1,11 @@
 """检索说明书，由模型回答并将引用映射回原始节点。"""
 
 import json
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
+from contextlib import closing
+from dataclasses import dataclass, field, replace
 
+from httpx import TimeoutException, TransportError
 from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import TextNode
 from openai import APITimeoutError, OpenAIError
@@ -23,9 +26,14 @@ _ANSWER_PROMPT = """你是菲斯曼壁挂炉说明书的问答助手。把用户
 用直接对应用户问题的证据回答，避免拼用不同操作场景的步骤。保留原文中影响步骤适用性的全部条件，包括必须同时出现的报码和图标。
 证据只覆盖部分步骤时说明缺失。按键名称或图标无法从文字确定时，说明需查引文对应原图；不要把孤立的斜杠或空白写成按键名称。
 勿在答案里输出页码，程序会补充原页引用。
-仅返回 JSON 对象，字段 answer 为中文回复，citations 为采用的片段编号数组，error_code 为 null 或
+citations 为采用的片段编号数组，error_code 为 null 或
 safety_notice、missing_control_type、control_type_mismatch、clarify_fault、insufficient_evidence 之一。
 普通回答须选至少一个片段。风险提示的 citations 必须为空数组。澄清和资料不足时可以不选片段。"""
+_JSON_FORMAT = "\n仅返回一个 JSON 对象，包含 answer（中文回复）、citations 和 error_code。"
+_STREAM_FORMAT = (
+    "\n第一行只输出包含 citations 和 error_code 的单行 JSON 对象。"
+    "换行后直接输出中文回答正文，不输出 Markdown 代码围栏。"
+)
 _MODEL_CODES = {
     None, "safety_notice", "missing_control_type", "control_type_mismatch",
     "clarify_fault", "insufficient_evidence",
@@ -68,7 +76,7 @@ def _with_related_steps(index: VectorStoreIndex, nodes: list[TextNode]) -> list[
     return nodes + related
 
 
-def _decode_answer(reply: str, nodes: list[TextNode]) -> AnswerResult:
+def _read_object(reply: str) -> dict | None:
     # 百炼可能用 Markdown 围栏包装 JSON。
     reply = reply.strip()
     if reply.startswith(("```json\n", "```\n")) and reply.endswith("```"):
@@ -76,39 +84,85 @@ def _decode_answer(reply: str, nodes: list[TextNode]) -> AnswerResult:
     try:
         payload = json.loads(reply)
     except json.JSONDecodeError:
-        payload = None
-    if isinstance(payload, dict):
-        answer = payload.get("answer")
-        indices = payload.get("citations")
-        code = payload.get("error_code")
-        if (
-            isinstance(answer, str) and answer.strip()
-            and "error_code" in payload
-            and (code is None or isinstance(code, str) and code in _MODEL_CODES)
-            and isinstance(indices, list)
-        ):
-            if code == "safety_notice":
-                # 说明书片段可能列出正文省略的现场处置步骤。
-                return AnswerResult(answer.strip(), error_code=code)
-            if any(type(i) is not int or not 1 <= i <= len(nodes) for i in indices):
-                return AnswerResult("模型返回的回答或引用格式无效。", error_code="invalid_model_response")
-            if code is None and not indices:
-                return AnswerResult("当前回答缺少可核对的说明书依据。", error_code="insufficient_evidence")
-            citations = []
-            for i in dict.fromkeys(indices):
-                node = nodes[i - 1]
-                citations.append(Citation(
-                    node.node_id, node.ref_doc_id, node.metadata["page_no"],
-                    list(node.metadata["bbox"]), node.text,
-                ))
-            return AnswerResult(answer.strip(), citations, code)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _invalid_reply() -> AnswerResult:
     return AnswerResult("模型返回的回答或引用格式无效。", error_code="invalid_model_response")
+
+
+def _answer_metadata(payload: dict, nodes: list[TextNode]) -> AnswerResult:
+    """校验状态和引用。空正文表示可以接收模型正文。"""
+    indices = payload.get("citations")
+    code = payload.get("error_code")
+    if (
+        "error_code" not in payload
+        or (code is not None and (not isinstance(code, str) or code not in _MODEL_CODES))
+        or not isinstance(indices, list)
+    ):
+        return _invalid_reply()
+    if code == "safety_notice":
+        # 说明书片段可能列出正文省略的现场处置步骤。
+        return AnswerResult("", error_code=code)
+    if any(type(i) is not int or not 1 <= i <= len(nodes) for i in indices):
+        return _invalid_reply()
+    if code is None and not indices:
+        return AnswerResult("当前回答缺少可核对的说明书依据。", error_code="insufficient_evidence")
+    citations = []
+    for i in dict.fromkeys(indices):
+        node = nodes[i - 1]
+        citations.append(Citation(
+            node.node_id, node.ref_doc_id, node.metadata["page_no"],
+            list(node.metadata["bbox"]), node.text,
+        ))
+    return AnswerResult("", citations, code)
+
+
+def _decode_answer(reply: str, nodes: list[TextNode]) -> AnswerResult:
+    payload = _read_object(reply)
+    answer = payload.get("answer") if payload is not None else None
+    if not isinstance(answer, str) or not answer.strip():
+        return _invalid_reply()
+    result = _answer_metadata(payload, nodes)
+    return result if result.answer else replace(result, answer=answer.strip())
+
+
+def _stream_answer(
+    chunks: Iterator[str], nodes: list[TextNode], on_delta: Callable[[str], None],
+) -> AnswerResult:
+    header = ""
+    for chunk in chunks:
+        line, separator, first_text = chunk.partition("\n")
+        header += line
+        if separator:
+            break
+    else:
+        return _invalid_reply()
+
+    payload = _read_object(header)
+    if payload is None:
+        return _invalid_reply()
+    result = _answer_metadata(payload, nodes)
+    if result.answer:
+        return result
+
+    parts = []
+    if first_text:
+        parts.append(first_text)
+        on_delta(first_text)
+    for chunk in chunks:
+        parts.append(chunk)
+        on_delta(chunk)
+    answer = "".join(parts).strip()
+    return replace(result, answer=answer) if answer else _invalid_reply()
 
 
 def ask(
     index: VectorStoreIndex, question: str, control_type: str | None = None, *, top_k: int = DEFAULT_TOP_K,
+    on_delta: Callable[[str], None] | None = None,
 ) -> AnswerResult:
-    """语义检索后交给模型统一答复，保留可回查的原始证据。"""
+    """语义检索后生成答复。提供回调时，在引用校验后逐块传出正文。"""
     try:
         matches = retrieve_nodes(index, question, top_k=top_k)
         nodes = [result.node for result in matches
@@ -123,9 +177,12 @@ def ask(
                 for i, node in enumerate(nodes, 1)
             ],
         }, ensure_ascii=False)
-        reply = llm.generate(prompt, system_prompt=_ANSWER_PROMPT)
-    except APITimeoutError:
+        if on_delta is not None:
+            with closing(llm.stream(prompt, system_prompt=_ANSWER_PROMPT + _STREAM_FORMAT)) as chunks:
+                return _stream_answer(chunks, nodes, on_delta)
+        reply = llm.generate(prompt, system_prompt=_ANSWER_PROMPT + _JSON_FORMAT)
+    except (APITimeoutError, TimeoutException):
         return AnswerResult("模型服务请求超时。", error_code="model_timeout")
-    except OpenAIError:
+    except (OpenAIError, TransportError):
         return AnswerResult("模型服务请求失败。", error_code="model_service_error")
     return _decode_answer(reply, nodes)
