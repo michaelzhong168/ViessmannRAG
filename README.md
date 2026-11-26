@@ -147,3 +147,30 @@ data: {"answer":"请先选择设备操作面板。","citations":[],"error_code":
 服务端在 `result` 或 `error` 后关闭响应。若连接在终止事件之前断开，H5 应将此次回答视为未完成并允许重试。上游超时发生在流开启后，通过 `event: error` 和 `error_code: "model_timeout"` 返回，HTTP 状态保持 200。流开启前的拒绝仍使用 JSON，例如请求有误（400）、来源未获允许（403）、接收超时（408）或服务正忙（503）。
 
 `--upstream-timeout` 默认 30 秒，分别用于向量与生成的网络操作等待。完整问答耗时还包括两次调用及流式生成各段时间。
+
+## R02-01 · 标注与分集
+
+将正式 UTF-8 JSONL 题集保存到本机 `data/eval/golden_manual.jsonl`。每行一题。下面是合成澄清题。
+
+```json
+{"dataset_version":"manual-v1","id":"q-0001","intent_id":"pressure-read","split":"debug","control_type":null,"question":"这个面板怎么看水压？","expected_error_code":"missing_control_type","evidence_groups":[]}
+```
+
+| 字段 | 标注规则 |
+| --- | --- |
+| `dataset_version` | 每行使用同一版本号。修改问句、期望、证据或分集后递增版本，在本地保留冻结 JSONL、摘要和修订记录。 |
+| `id` | 固定且唯一。重排或修订同一道题时保留 ID，新增问法分配新 ID。 |
+| `intent_id`、`split` | 先按用户目标归并同义问法和补选面板前后的变体，再整组选择 `debug` 或 `holdout`。留出题供固定版本复测。 |
+| `control_type`、`question` | 保存实际发送的面板类型和原问句。未提供面板时填 `null`。 |
+| `expected_error_code` | `null` 表示带依据应答。`missing_control_type` 表示补选面板，`clarify_fault` 表示补充故障信息，`control_type_mismatch` 表示资料不适用，`insufficient_evidence` 表示资料不足，`safety_notice` 表示安全提示。 |
+| `evidence_groups` | 应答题每项用 `required_fact` 记录一条必要事实，用 `anchors` 记录支持该事实的可替代原页锚点。全部事实组均需覆盖。其他题填空数组。 |
+
+每个锚点填写 `doc_id`（来源 PDF 文件名去扩展名）、`pdf_version`（文件 SHA-256）、`page_no`（从 1 开始的物理页）和 `quote`（逐字引文）。同页原文重复时提供 `bbox`，坐标沿用 R01-02 的未旋转页坐标。引文检查忽略排版空白，保留其余字符。维护者在启用留出集前逐题按原页核对操作适用性、原句、事实和预期行为，并记录所复核的题集版本与摘要。
+
+使用题集及核定页段配置做本地校验。省略 PDF 与配置参数可仅检查题集结构及分集。
+
+```bash
+.venv/bin/python -m manual_rag.question_set data/eval/golden_manual.jsonl \
+  --pdf 'data/raw/按键式官方中文操作指南.pdf' \
+  --scopes data/eval/control-scopes.json
+```
