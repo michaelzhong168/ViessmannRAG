@@ -3,7 +3,7 @@
 import json
 import sys
 from http.client import HTTPConnection
-from threading import Thread
+from threading import Event, Thread
 
 import httpx
 import pymupdf
@@ -244,6 +244,18 @@ def test_stream_interruption_exits_nonzero_without_citations(query_service, caps
     assert "模型服务请求失败" in err
 
 
+def _sse_events(response):
+    """逐帧读取真实 HTTP 响应，保留正文中的 Unicode 和换行。"""
+    while line := response.readline():
+        if line.startswith(b":"):
+            assert response.readline() == b"\n"
+            continue
+        event = line.removeprefix(b"event: ").strip().decode()
+        data = json.loads(response.readline().removeprefix(b"data: "))
+        assert response.readline() == b"\n"
+        yield event, data
+
+
 @pytest.fixture
 def ask_http(query_service, request):
     """通过真实 HTTP 契约测试，外部模型沿用合成说明书的替身。"""
@@ -254,7 +266,7 @@ def ask_http(query_service, request):
         worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
         worker.start()
 
-        def send(method, body=None, *, path="/api/ask", request_origin=origin):
+        def send(method, body=None, *, path="/api/ask", request_origin=origin, read_events=list):
             connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
             try:
                 headers = {"Content-Type": "application/json"}
@@ -262,8 +274,12 @@ def ask_http(query_service, request):
                     headers["Origin"] = request_origin
                 connection.request(method, path, body, headers)
                 response = connection.getresponse()
-                raw = response.read()
-                return response.status, dict(response.getheaders()), json.loads(raw) if raw else None
+                if response.headers.get_content_type() == "text/event-stream":
+                    data = read_events(_sse_events(response))
+                else:
+                    raw = response.read()
+                    data = json.loads(raw) if raw else None
+                return response.status, dict(response.getheaders()), data
             finally:
                 connection.close()
 
@@ -287,13 +303,20 @@ def test_h5_preflight_and_control_type_followup_return_original_citations(ask_ht
     assert headers["Access-Control-Allow-Headers"] == "Content-Type"
 
     question = {"question": "怎么打开暖气"}
-    status, headers, result = send("POST", json.dumps(question))
+    status, headers, events = send("POST", json.dumps(question))
     assert status == 200
     assert headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
-    assert result == {"answer": "请先选操作面板。", "citations": [], "error_code": "missing_control_type"}
+    assert headers["Content-Type"] == "text/event-stream; charset=utf-8"
+    assert headers["X-Accel-Buffering"] == "no"
+    assert events == [
+        ("delta", {"text": "请先选操作面板。"}),
+        ("result", {"answer": "请先选操作面板。", "citations": [], "error_code": "missing_control_type"}),
+    ]
 
-    status, _, result = send("POST", json.dumps({**question, "control_type": "按键式"}))
+    status, _, events = send("POST", json.dumps({**question, "control_type": "按键式"}))
     assert status == 200
+    (delta, fragment), (terminal, result) = events
+    assert (delta, fragment, terminal) == ("delta", {"text": "请查看手册。"}, "result")
     assert result["answer"] == "请查看手册。"
     assert result["error_code"] is None
     citation, = result["citations"]
@@ -312,19 +335,60 @@ def test_h5_timeout_is_retryable_and_service_failure_is_redacted(ask_http):
     responses.extend([
         [httpx.ReadTimeout("upstream details")],
         {"answer": "查阅说明书。", "citations": [1], "error_code": None},
-        httpx.ReadError("private upstream detail"),
+        ['{"citations":[1],"error_code":null}\n', "部分正文", httpx.ReadError("private upstream detail")],
+        ['{"citations":[999],"error_code":null}\n', "无效正文", None],
     ])
     body = json.dumps({"question": "怎么看水压", "control_type": "按键式"})
-    status, headers, result = send("POST", body)
-    assert status == 504
+    status, headers, events = send("POST", body)
+    assert status == 200
     assert headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
-    assert result == {"answer": "模型服务请求超时。", "citations": [], "error_code": "model_timeout"}
-    status, _, result = send("POST", body, request_origin=None)
-    assert status == 200 and result["citations"]
-    status, _, result = send("POST", body)
-    assert status == 502
-    assert result == {"answer": "模型服务请求失败。", "citations": [], "error_code": "model_service_error"}
-    assert len(requests) == 3
+    assert events == [("error", {
+        "answer": "模型服务请求超时。", "citations": [], "error_code": "model_timeout",
+    })]
+    status, _, events = send("POST", body, request_origin=None)
+    assert status == 200 and events[-1][0] == "result" and events[-1][1]["citations"]
+    status, _, events = send("POST", body)
+    assert status == 200
+    assert events == [
+        ("delta", {"text": "部分正文"}),
+        ("error", {"answer": "模型服务请求失败。", "citations": [], "error_code": "model_service_error"}),
+    ]
+    status, _, events = send("POST", body)
+    assert status == 200
+    assert events == [("error", {
+        "answer": "模型返回的回答或引用格式无效。", "citations": [], "error_code": "invalid_model_response",
+    })]
+    assert len(requests) == 4
+
+
+def test_h5_flushes_delta_before_upstream_finishes(ask_http):
+    send, requests, responses = ask_http
+    release = Event()
+
+    def wait_for_client():
+        assert release.wait(timeout=3), "客户端未在上游完成前收到 SSE 片段"
+
+    responses.append([
+        '{"citations":[1],"error_code":null}\n', "第一行\n", wait_for_client, "第二行", None,
+    ])
+    body = json.dumps({"question": "怎么看水压", "control_type": "按键式"})
+
+    def check_live(events):
+        try:
+            first = next(events)
+            assert first == ("delta", {"text": "第一行\n"})
+            status, _, busy = send("POST", body)
+            assert status == 503 and busy["error_code"] == "service_busy"
+        finally:
+            release.set()
+        return list(events)
+
+    status, _, rest = send("POST", body, read_events=check_live)
+    assert status == 200
+    (delta, fragment), (terminal, result) = rest
+    assert (delta, fragment, terminal) == ("delta", {"text": "第二行"}, "result")
+    assert result["answer"] == "第一行\n第二行" and result["citations"]
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("body", [

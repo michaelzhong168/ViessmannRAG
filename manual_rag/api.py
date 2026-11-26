@@ -16,11 +16,7 @@ from manual_rag.source import CONTROL_TYPES
 
 _ASK_PATH = "/api/ask"
 _MAX_BODY = 16 * 1024
-_UPSTREAM_STATUS = {
-    "model_timeout": 504,
-    "model_service_error": 502,
-    "invalid_model_response": 502,
-}
+_STREAM_ERRORS = {"model_timeout", "model_service_error", "invalid_model_response", "internal_error"}
 
 
 class AskServer(ThreadingHTTPServer):
@@ -38,19 +34,22 @@ class AskServer(ThreadingHTTPServer):
 
 
 class AskHandler(BaseHTTPRequestHandler):
-    """接收一个 JSON 问题，使用同一套结果字段返回问答或错误。"""
+    """接收一个 JSON 问题，通过 SSE 逐段发送正文和最终结果。"""
 
     server: AskServer
     timeout = 10  # 防止未发送完整请求的客户端长期占用连接。
 
-    def _reply(self, status: int, result: AnswerResult | None = None) -> None:
-        body = json.dumps(asdict(result), ensure_ascii=False).encode() if result else b""
+    def _response_headers(self, status: int) -> None:
         self.send_response(status)
         self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-store")
         origin = self.headers.get("Origin")
         if origin in self.server.origins:
             self.send_header("Access-Control-Allow-Origin", origin)
+
+    def _reply(self, status: int, result: AnswerResult | None = None) -> None:
+        body = json.dumps(asdict(result), ensure_ascii=False).encode() if result else b""
+        self._response_headers(status)
         if status == 204:
             self.send_header("Access-Control-Allow-Methods", "POST")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -97,16 +96,43 @@ class AskHandler(BaseHTTPRequestHandler):
             self._reply(503, AnswerResult("问答服务正在处理另一条问题，请稍后重试。", error_code="service_busy"))
             return
         try:
-            result = ask(self.server.index, question, control_type, timeout=self.server.upstream_timeout)
+            try:
+                self._start_stream()
+                result = self._stream_answer(question, control_type)
+            finally:
+                self.server.ask_lock.release()
+            event = "error" if result.error_code in _STREAM_ERRORS else "result"
+            self._event(event, asdict(result))
+        except (ConnectionError, TimeoutError):
+            # 浏览器已断开或停止读取。当前问答迭代随调用退出。
+            pass
+
+    def _start_stream(self) -> None:
+        self._response_headers(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(b": connected\n\n")
+        self.wfile.flush()
+
+    def _event(self, name: str, data: dict) -> None:
+        payload = json.dumps(data, ensure_ascii=False)
+        self.wfile.write(f"event: {name}\ndata: {payload}\n\n".encode("utf-8"))
+        self.wfile.flush()
+
+    def _stream_answer(self, question: str, control_type: str | None) -> AnswerResult:
+        try:
+            return ask(
+                self.server.index, question, control_type,
+                timeout=self.server.upstream_timeout,
+                on_delta=lambda chunk: self._event("delta", {"text": chunk}),
+            )
+        except (ConnectionError, TimeoutError):
+            raise
         except Exception as exc:
             logging.error("处理问答时发生内部错误（%s）", type(exc).__name__)
-            status = 500
-            result = AnswerResult("问答服务暂时不可用。", error_code="internal_error")
-        else:
-            status = _UPSTREAM_STATUS.get(result.error_code, 200)
-        finally:
-            self.server.ask_lock.release()
-        self._reply(status, result)
+            return AnswerResult("问答服务暂时不可用。", error_code="internal_error")
 
     def _read_question(self) -> tuple[str, str | None]:
         if self.headers.get_content_type() != "application/json":
