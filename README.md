@@ -103,3 +103,42 @@ for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
 所有问答都以流式方式接收模型答复。终端逐段显示正文，结束后列出引用。重定向或管道默认收完答复后输出单个 JSON。可用 `--stream` 或 `--json` 显式选择显示方式。
 
 操作类型可选。问答检索将语义候选、原问句和用户提供的类型一起交给模型。召回操作步骤时，补充同一说明书同页同节的其他步骤。模型回答危险、类型适配和报码问题，程序从模型选用的片段回填来源、物理页、坐标和逐字引用。可用 `--index` 选择已发布的索引、`--top-k` 调整初次检索的候选数。
+
+## 2A · H5 问答 API
+
+在后端工作目录配置 `.env`（`DASHSCOPE_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`、`EMBED_MODEL`），并准备与向量模型匹配的已发布索引。启动开发服务。
+
+```bash
+.venv/bin/python -m manual_rag.api --port 8000 --allow-origin http://localhost:5173
+```
+
+默认地址为 `127.0.0.1:8000`，默认索引为 `data/semantic/index.json`。可用 `--index` 选择核定的索引。H5 可将 `/api/ask` 代理到后端，或者用完整后端地址发起跨源请求。用 `--allow-origin` 指定手机浏览器实际打开的 H5 来源（协议、主机和端口），多来源可重复指定。授权局域网联调时可用 `--host` 绑定开发机的局域网 IP，手机通过该 IP 或 H5 开发代理访问。模型密钥、PDF 和索引保存在后端。
+
+```bash
+curl -sS http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  --data '{"question":"怎么查看当前水压","control_type":"按键式"}'
+```
+
+请求体为 UTF-8 JSON，最大 16 KiB。`question` 为必填的非空字符串。`control_type` 可以省略、填 `null`，或使用 `旋钮式`、`按键式`、`触控式`。服务器一次返回完整 JSON。
+
+```json
+{
+  "answer": "请先选择设备操作面板。",
+  "citations": [],
+  "error_code": "missing_control_type"
+}
+```
+
+每条引用包含 `node_id`、`doc_id`、`page_no`、`bbox` 和 `quote`。`page_no` 是从 1 开始的 PDF 物理页，`bbox` 是页坐标中的矩形 `[x0, y0, x1, y1]`。前端以文本渲染答案和引用。
+
+| HTTP 状态 | H5 处理 |
+| --- | --- |
+| 200 | 展示答案和引用。收到 `missing_control_type` 时显示面板选项，并带上原问题和所选类型再次提交。其他业务状态可直接展示 `answer`。 |
+| 400 | 检查请求字段与编码。 |
+| 403 | 核对 H5 来源配置。 |
+| 502 | 上游服务失败或模型回复格式无效，可提示稍后重试。 |
+| 503 | 当前开发实例正在处理另一条问答，可提示稍后重试。 |
+| 504 | `model_timeout`，保留原请求并提供重试。 |
+
+`--upstream-timeout` 默认 30 秒，分别用于向量与生成的网络操作等待。完整问答耗时还包括两次调用及流式生成各段时间。离线 HTTP 用例使用百炼替身触发超时并验证重发。

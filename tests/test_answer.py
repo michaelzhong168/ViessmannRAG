@@ -2,6 +2,8 @@
 
 import json
 import sys
+from http.client import HTTPConnection
+from threading import Thread
 
 import httpx
 import pymupdf
@@ -9,6 +11,7 @@ import pytest
 from openai import OpenAI
 
 from manual_rag.__main__ import main
+from manual_rag.api import AskServer
 from manual_rag.index import build_index
 from tools import llm
 
@@ -35,12 +38,13 @@ class _Events(httpx.SyncByteStream):
 
 
 @pytest.fixture
-def query_service(tmp_path, monkeypatch):
+def query_service(tmp_path, monkeypatch, request):
     requests = []
     responses = []
+    network_timeouts = []
 
     def respond(request):
-        assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"))
+        network_timeouts.append(request.extensions["timeout"])
         body = json.loads(request.content)
         if request.url.path.endswith("/embeddings"):
             inputs = body["input"] if isinstance(body["input"], list) else [body["input"]]
@@ -64,7 +68,8 @@ def query_service(tmp_path, monkeypatch):
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
         def make_client(**kwargs):
-            return OpenAI(**kwargs, max_retries=0, http_client=http_client)
+            kwargs.setdefault("max_retries", 0)
+            return OpenAI(**kwargs, http_client=http_client)
 
         monkeypatch.setattr(llm, "OpenAI", make_client)
         monkeypatch.setenv("DASHSCOPE_API_KEY", "offline-test")
@@ -88,6 +93,10 @@ def query_service(tmp_path, monkeypatch):
         }), encoding="utf-8")
         assert build_index(pdf_path, index_path, scopes_path=scope_path) == 2
         yield index_path, requests, responses
+        for timeout in network_timeouts:
+            assert timeout == dict.fromkeys(("connect", "read", "write", "pool"), timeout["read"])
+        expected = getattr(request.node, "api_timeout", None)
+        assert all(timeout["read"] == expected for timeout in network_timeouts[1:])
 
 
 @pytest.mark.parametrize(("question", "device_type", "code", "citations"), [
@@ -233,3 +242,111 @@ def test_stream_interruption_exits_nonzero_without_citations(query_service, caps
     out, err = capsys.readouterr()
     assert out == "部分正文\n"
     assert "模型服务请求失败" in err
+
+
+@pytest.fixture
+def ask_http(query_service, request):
+    """通过真实 HTTP 契约测试，外部模型沿用合成说明书的替身。"""
+    path, requests, responses = query_service
+    origin = "http://localhost:5173"
+    request.node.api_timeout = 2.0
+    with AskServer(("127.0.0.1", 0), path, origins=(origin,), timeout=2) as server:
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        worker.start()
+
+        def send(method, body=None, *, path="/api/ask", request_origin=origin):
+            connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                headers = {"Content-Type": "application/json"}
+                if request_origin is not None:
+                    headers["Origin"] = request_origin
+                connection.request(method, path, body, headers)
+                response = connection.getresponse()
+                raw = response.read()
+                return response.status, dict(response.getheaders()), json.loads(raw) if raw else None
+            finally:
+                connection.close()
+
+        try:
+            yield send, requests, responses
+        finally:
+            server.shutdown()
+            worker.join()
+
+
+def test_h5_preflight_and_control_type_followup_return_original_citations(ask_http):
+    send, requests, responses = ask_http
+    responses.extend([
+        {"answer": "请先选操作面板。", "citations": [], "error_code": "missing_control_type"},
+        {"answer": "请查看手册。", "citations": [1], "error_code": None},
+    ])
+    status, headers, body = send("OPTIONS")
+    assert (status, body) == (204, None)
+    assert headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
+    assert headers["Access-Control-Allow-Methods"] == "POST"
+    assert headers["Access-Control-Allow-Headers"] == "Content-Type"
+
+    question = {"question": "怎么打开暖气"}
+    status, headers, result = send("POST", json.dumps(question))
+    assert status == 200
+    assert headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
+    assert result == {"answer": "请先选操作面板。", "citations": [], "error_code": "missing_control_type"}
+
+    status, _, result = send("POST", json.dumps({**question, "control_type": "按键式"}))
+    assert status == 200
+    assert result["answer"] == "请查看手册。"
+    assert result["error_code"] is None
+    citation, = result["citations"]
+    assert set(citation) == {"node_id", "doc_id", "page_no", "bbox", "quote"}
+    assert citation["doc_id"] == "manual"
+    assert citation["page_no"] == 1
+    assert citation["quote"] == "Button instructions"
+    assert len(citation["bbox"]) == 4
+    prompts = [json.loads(request["messages"][-1]["content"]) for request in requests]
+    assert [prompt["question"] for prompt in prompts] == [question["question"]] * 2
+    assert [prompt["control_type"] for prompt in prompts] == [None, "按键式"]
+
+
+def test_h5_timeout_is_retryable_and_service_failure_is_redacted(ask_http):
+    send, requests, responses = ask_http
+    responses.extend([
+        [httpx.ReadTimeout("upstream details")],
+        {"answer": "查阅说明书。", "citations": [1], "error_code": None},
+        httpx.ReadError("private upstream detail"),
+    ])
+    body = json.dumps({"question": "怎么看水压", "control_type": "按键式"})
+    status, headers, result = send("POST", body)
+    assert status == 504
+    assert headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
+    assert result == {"answer": "模型服务请求超时。", "citations": [], "error_code": "model_timeout"}
+    status, _, result = send("POST", body, request_origin=None)
+    assert status == 200 and result["citations"]
+    status, _, result = send("POST", body)
+    assert status == 502
+    assert result == {"answer": "模型服务请求失败。", "citations": [], "error_code": "model_service_error"}
+    assert len(requests) == 3
+
+
+@pytest.mark.parametrize("body", [
+    "null", "{", " " * (16 * 1024 + 1), '{"question": " "}', '{"question": true}',
+    '{"question": "test", "control_type": []}', '{"question": "\\ud800"}',
+])
+def test_h5_rejects_bad_payloads_without_model_calls(ask_http, body):
+    send, requests, _ = ask_http
+    status, _, result = send("POST", body)
+    assert status == 400 and result["error_code"] == "invalid_request"
+    assert requests == []
+
+
+def test_h5_disallows_unapproved_origins_and_has_no_file_routes(ask_http):
+    send, requests, _ = ask_http
+    for method in ("OPTIONS", "POST"):
+        status, headers, result = send(method, '{"question": "test"}', request_origin="http://other:5173")
+        assert status == 403 and result["error_code"] == "origin_not_allowed"
+        assert "Access-Control-Allow-Origin" not in headers
+    status, _, result = send("GET", path="/data/semantic/index.json")
+    assert status == 404 and result["error_code"] == "not_found"
+    status, headers, result = send("GET")
+    assert status == 405 and result["error_code"] == "method_not_allowed"
+    assert headers["Allow"] == "POST, OPTIONS"
+    assert requests == []

@@ -141,7 +141,7 @@ def _stream_answer(
 
 def ask(
     index: VectorStoreIndex, question: str, control_type: str | None = None, *, top_k: int = DEFAULT_TOP_K,
-    on_delta: Callable[[str], None] | None = None,
+    on_delta: Callable[[str], None] | None = None, timeout: float | None = None,
 ) -> AnswerResult:
     """语义检索后接收流式答复。提供回调时，在引用校验后逐块传出正文。"""
     try:
@@ -158,7 +158,7 @@ def ask(
                 for i, node in enumerate(nodes, 1)
             ],
         }, ensure_ascii=False)
-        with closing(llm.stream(prompt, system_prompt=_ANSWER_PROMPT)) as chunks:
+        with closing(llm.stream(prompt, system_prompt=_ANSWER_PROMPT, timeout=timeout)) as chunks:
             return _stream_answer(chunks, nodes, on_delta)
     except (APITimeoutError, TimeoutException):
         return AnswerResult("模型服务请求超时。", error_code="model_timeout")

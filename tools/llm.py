@@ -31,14 +31,16 @@ def _load_env() -> None:
     load_dotenv(ENV_FILE, override=False)
 
 
-def _get_client() -> OpenAI:
+def _get_client(*, timeout: float | None = None) -> OpenAI:
     """延迟构造 client：只有真正调用模型时才校验密钥。"""
     _load_env()
     api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(MISSING_KEY_HINT)
     base_url = os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL
-    return OpenAI(api_key=api_key, base_url=base_url, timeout=None)
+    if timeout is None:
+        return OpenAI(api_key=api_key, base_url=base_url, timeout=None)
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
 
 
 def _resolve_model(model: str | None) -> str:
@@ -76,9 +78,11 @@ def generate(
     return content
 
 
-def stream(prompt: str, *, system_prompt: str = SYSTEM_PROMPT) -> Iterator[str]:
+def stream(
+    prompt: str, *, system_prompt: str = SYSTEM_PROMPT, timeout: float | None = None,
+) -> Iterator[str]:
     """逐块返回回复正文，断流或截断时抛出服务异常。"""
-    client = _get_client()
+    client = _get_client(timeout=timeout)
     completed = False
     with client.chat.completions.create(
         model=_resolve_model(None),

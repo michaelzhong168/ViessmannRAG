@@ -57,13 +57,15 @@ def build_index(
     return len(nodes)
 
 
-def load_index(index_path: str | Path = DEFAULT_INDEX) -> VectorStoreIndex:
+def load_index(
+    index_path: str | Path = DEFAULT_INDEX, *, timeout: float | None = None,
+) -> VectorStoreIndex:
     """从已发布快照重载索引。格式或 EMBED_MODEL 不兼容时提示重新建库。"""
     with Path(index_path).open(encoding="utf-8") as stream:
         snapshot = json.load(stream)
     if snapshot.get("format_version") != _FORMAT_VERSION:
         raise ValueError("索引格式不匹配，请运行 index 重新建库")
-    embed = BailianEmbedding()
+    embed = BailianEmbedding(timeout=timeout)
     if snapshot.get("embedding_model") != embed.model_name:
         raise ValueError("索引的 Embedding 模型与 EMBED_MODEL 不匹配，请运行 index 重新建库")
     storage = StorageContext.from_dict(snapshot["storage"])
