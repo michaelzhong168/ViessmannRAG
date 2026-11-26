@@ -103,3 +103,47 @@ for result in retrieve_nodes(index, "查看水压", "按键式", top_k=5):
 所有问答都以流式方式接收模型答复。终端逐段显示正文，结束后列出引用。重定向或管道默认收完答复后输出单个 JSON。可用 `--stream` 或 `--json` 显式选择显示方式。
 
 操作类型可选。问答检索将语义候选、原问句和用户提供的类型一起交给模型。召回操作步骤时，补充同一说明书同页同节的其他步骤。模型回答危险、类型适配和报码问题，程序从模型选用的片段回填来源、物理页、坐标和逐字引用。可用 `--index` 选择已发布的索引、`--top-k` 调整初次检索的候选数。
+
+## 2A · H5 问答 API
+
+在后端工作目录配置 `.env`（`DASHSCOPE_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`、`EMBED_MODEL`），并准备与向量模型匹配的已发布索引。启动开发服务。
+
+```bash
+.venv/bin/python -m manual_rag.api --port 8000 --allow-origin http://localhost:5173
+```
+
+默认地址为 `127.0.0.1:8000`，默认索引为 `data/semantic/index.json`。可用 `--index` 选择核定的索引。H5 可将 `/api/ask` 代理到后端，或者用完整后端地址发起跨源请求。用 `--allow-origin` 指定手机浏览器实际打开的 H5 来源（协议、主机和端口），多来源可重复指定。授权局域网联调时可用 `--host` 绑定开发机的局域网 IP，手机通过该 IP 或 H5 开发代理访问。模型密钥、PDF 和索引保存在后端。
+
+```bash
+curl -NsS http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  --data '{"question":"怎么查看当前水压","control_type":"按键式"}'
+```
+
+请求体为 UTF-8 JSON，最大 16 KiB。`question` 为必填的非空字符串。`control_type` 可以省略、填 `null`，或使用 `旋钮式`、`按键式`、`触控式`。
+
+请求受理后返回 HTTP 200 和 `Content-Type: text/event-stream; charset=utf-8`。H5 用 `fetch()` 发送 POST JSON，并从 `response.body` 逐段解析 SSE。每个事件由空行分隔，`data:` 后是 JSON。忽略以 `:` 开头的注释行。使用开发代理时关闭响应缓冲。
+
+```text
+event: delta
+data: {"text":"请先选择"}
+
+event: delta
+data: {"text":"设备操作面板。"}
+
+event: result
+data: {"answer":"请先选择设备操作面板。","citations":[],"error_code":"missing_control_type"}
+
+```
+
+| 事件 | 数据与处理 |
+| --- | --- |
+| `delta` | `{"text":"正文增量"}`。按收到的顺序追加到临时正文，可能收到零个或多个。 |
+| `result` | `{answer, citations, error_code}`。用 `answer` 定稿并展示引用。收到 `missing_control_type` 时展示面板选项，用原问题和所选类型重新发送。 |
+| `error` | `{answer, citations, error_code}`。以 `answer` 提示失败并替换已经显示的临时正文。`error_code` 可能为 `model_timeout`、`model_service_error`、`invalid_model_response` 或 `internal_error`，可保留请求以供重试。 |
+
+每条引用包含 `node_id`、`doc_id`、`page_no`、`bbox` 和 `quote`。`page_no` 是从 1 开始的 PDF 物理页，`bbox` 是页坐标中的矩形 `[x0, y0, x1, y1]`。前端以文本渲染答案和引用。
+
+服务端在 `result` 或 `error` 后关闭响应。若连接在终止事件之前断开，H5 应将此次回答视为未完成并允许重试。上游超时发生在流开启后，通过 `event: error` 和 `error_code: "model_timeout"` 返回，HTTP 状态保持 200。流开启前的拒绝仍使用 JSON，例如请求有误（400）、来源未获允许（403）、接收超时（408）或服务正忙（503）。
+
+`--upstream-timeout` 默认 30 秒，分别用于向量与生成的网络操作等待。完整问答耗时还包括两次调用及流式生成各段时间。

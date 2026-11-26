@@ -19,16 +19,19 @@ class BailianEmbedding(BaseEmbedding):
     _client: OpenAI | None = PrivateAttr(default=None)
     _dimension: int | None = PrivateAttr(default=None)
 
-    def __init__(self) -> None:
+    _timeout: float | None = PrivateAttr(default=None)
+
+    def __init__(self, *, timeout: float | None = None) -> None:
         llm._load_env()
         model = os.environ.get("EMBED_MODEL", "").strip()
         if not model:
             raise ValueError("缺少 EMBED_MODEL，请检查 .env 中的 EMBED_MODEL")
         super().__init__(model_name=model, embed_batch_size=_BATCH_SIZE)
+        self._timeout = timeout
 
     def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
         if self._client is None:
-            self._client = llm._get_client()
+            self._client = llm._get_client(timeout=self._timeout)
         response = self._client.embeddings.create(
             model=self.model_name, input=texts, encoding_format="float",
         )
