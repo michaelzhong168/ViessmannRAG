@@ -10,6 +10,7 @@ import pymupdf
 from openai import OpenAIError
 
 from manual_rag.answer import DEFAULT_TOP_K, ask
+from manual_rag.evaluation import DEFAULT_QUESTIONS, DEFAULT_RUNS, replay_question, run_evaluation
 from manual_rag.index import DEFAULT_INDEX, build_index, load_index
 from manual_rag.source import CONTROL_TYPES
 
@@ -32,9 +33,35 @@ def main(argv: list[str] | None = None) -> int:
     output = query.add_mutually_exclusive_group()
     output.add_argument("--stream", action="store_true", help="逐块输出正文，结束后显示引用")
     output.add_argument("--json", action="store_true", help="一次性输出 JSON")
+    evaluation = commands.add_parser("eval", help="运行题集并保存逐题评测和 Trace")
+    evaluation.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS)
+    evaluation.add_argument("--index", type=Path, default=DEFAULT_INDEX)
+    evaluation.add_argument("--runs", type=Path, default=DEFAULT_RUNS)
+    evaluation.add_argument("--split", choices=("debug", "holdout"), default="debug")
+    evaluation.add_argument("--question-id", help="仅运行所选分集中的指定题目")
+    evaluation.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    replay = commands.add_parser("replay", help="按运行与题目 ID 离线回放")
+    replay.add_argument("run_id")
+    replay.add_argument("question_id")
+    replay.add_argument("--runs", type=Path, default=DEFAULT_RUNS)
     args = parser.parse_args(argv)
 
     pymupdf.no_recommend_layout()
+    if args.command in ("eval", "replay"):
+        try:
+            if args.command == "eval":
+                outcome = run_evaluation(
+                    args.questions, args.index, args.runs,
+                    split=args.split, question_id=args.question_id, top_k=args.top_k,
+                )
+            else:
+                outcome = replay_question(args.runs, args.run_id, args.question_id)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            print(f"评测或回放失败：{type(exc).__name__}", file=sys.stderr)
+            return 1
+        print(json.dumps(outcome, ensure_ascii=False))
+        return int(args.command == "replay" and not outcome["matches_original"])
+
     if args.command == "ask":
         streaming = args.stream or (not args.json and sys.stdout.isatty())
         emitted = False

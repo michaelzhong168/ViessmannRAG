@@ -174,3 +174,18 @@ data: {"answer":"请先选择设备操作面板。","citations":[],"error_code":
   --pdf 'data/raw/按键式官方中文操作指南.pdf' \
   --scopes data/eval/control-scopes.json
 ```
+
+## R02-02 · 逐题评测与离线回放
+
+评测沿用问答的索引和模型配置。默认跑调试集，可用 `--question-id` 运行一题、`--top-k` 调整召回深度。维护者核定留出集后用 `--split holdout` 评测。
+
+```bash
+.venv/bin/python -m manual_rag eval --questions data/eval/golden_manual.jsonl --split debug
+.venv/bin/python -m manual_rag replay <运行ID> <题目ID>
+```
+
+每次运行在 `data/eval/runs/<运行ID>/` 下生成 `report.jsonl`、`traces/<题目ID>.json`、运行配置、该次使用的标注和索引证据快照。两条命令均可用 `--runs` 指定其他本地目录。原始内容保存在该目录，报告和 Trace 含手册片段和题集标注，须留在本机。
+
+报告逐事实组列出是否入库、原始召回、进入模型上下文、被引用和出现在答案中。证据按文档、PDF 版本、物理页、引文与可选坐标匹配当前节点，含补入的同节步骤。必要事实采用忽略排版空白的短语匹配。人工复核负责判断同义改写、忠实性与操作完整性。
+
+`eval` 完成记录时退出 0，题目结果见报告的 `score`。归因包括资料缺失 `missing_material`、召回遗漏 `retrieval_miss`、应答策略错误 `answer_strategy_error`、引用错误 `citation_error`、事实遗漏 `missing_fact` 和服务异常 `service_error`，同一题可能有多个归因。回放使用保存的上下文、流片段或服务失败信息重新判定，无需模型配置及索引原文件。回放结果与现场逐题判定一致时 `matches_original` 为 `true`，并退出 0。
