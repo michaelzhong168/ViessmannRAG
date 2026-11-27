@@ -57,6 +57,14 @@ def evaluation(tmp_path, monkeypatch):
                 for i, text in enumerate(inputs)
             ]})
         assert request.url.path.endswith("/chat/completions")
+        if not body.get("stream"):
+            state["judge_request"] = body
+            judgment = state.get("judgment", "[true]")
+            if isinstance(judgment, Exception):
+                raise judgment
+            return httpx.Response(200, json={"choices": [
+                {"message": {"role": "assistant", "content": judgment}, "finish_reason": "stop"},
+            ]})
         state["request"] = body
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
                               stream=_ModelStream(state["response"]))
@@ -146,6 +154,7 @@ def test_run_and_replay(evaluation, tmp_path, capsys, monkeypatch, scenario, att
         citations = []
     if scenario == "omit-fact":
         answer = "Select heating mode."
+        state["judgment"] = "[false]"
     state["embedding_error"] = scenario == "service-retrieval"
     header = json.dumps({"citations": citations, "error_code": code})
     chunks = [header[:8], header[8:] + "\n", answer, None]
@@ -156,6 +165,8 @@ def test_run_and_replay(evaluation, tmp_path, capsys, monkeypatch, scenario, att
     expected = attribution + (["answer_strategy_error"] if scenario == "retrieval" else [])
     assert trace["score"]["attributions"] == expected
     assert trace["score"]["passed"] == (scenario == "pass")
+    if trace["result"]["error_code"] is not None:
+        assert trace["fact_judgment"] is None and "judge_request" not in state
     assert trace["timings_s"]["total"] >= sum(value for stage, value in trace["timings_s"].items()
                                                if stage != "total")
     if scenario == "pass":
@@ -226,7 +237,86 @@ def test_replay_recomputes_saved_answer_and_detects_snapshot_change(evaluation, 
     assert result["result"]["answer"] == "Wait for display."
     assert result["score"]["passed"] and not result["matches_original"]
 
+    trace["fact_judgment"]["response"] = "[false]"
+    (run_dir / "traces" / "q1.json").write_text(json.dumps(trace), encoding="utf-8")
+    assert __main__.main(argv) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["score"]["attributions"] == ["missing_fact"]
+
     with (run_dir / "questions.jsonl").open("a", encoding="utf-8") as stream:
         stream.write("\n")
     assert __main__.main(argv) == 1
     assert "ValueError" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("answer", "judgment", "expected", "error"), [
+    ("When both lights flash together, wait for the screen.", "[true,true]", [True, True], None),
+    ("Wait for the screen.", "[true,false]", [True, False], None),
+    ("Wait for the screen.", "[true]", [None, None], "invalid_fact_judgment"),
+    ("Wait for the screen.", '[true,"false"]', [None, None], "invalid_fact_judgment"),
+    ("Wait for the screen.", httpx.ReadTimeout("secret-error-body"), [None, None], "APITimeoutError"),
+])
+def test_semantic_fact_judgment(evaluation, tmp_path, capsys, answer, judgment, expected, error):
+    """用同义答文、漏条件和判定异常验证逐事实应用模型结果。"""
+    _, index_path, question, calls, state = evaluation
+    original, = question["evidence_groups"]
+    required_condition = "The two indicators must flash simultaneously."
+    question["evidence_groups"].append({**original, "required_fact": required_condition})
+    state["response"] = ['{"citations":[2],"error_code":null}\n', answer, None]
+    state["judgment"] = judgment
+    call_count = len(calls)
+    run, trace = _run(tmp_path, capsys, index_path, question)
+
+    score = trace["score"]
+    assert [group["fact_present"] for group in score["groups"]] == expected
+    assert score["passed"] == all(expected)
+    assert trace["fact_judgment_error"] == error
+    assert score["attributions"] == (
+        ["service_error"] if error else [] if all(expected) else ["missing_fact"]
+    )
+    assert trace["result"]["answer"] == answer
+    assert trace["timings_s"]["fact_judgment"] >= 0
+    assert [call.split("/")[-1] for call in calls[call_count:]] == ["embeddings", "completions", "completions"]
+    system, user = state["judge_request"]["messages"]
+    assert trace["fact_judgment"]["prompt"] == user["content"]
+    assert trace["fact_judgment"]["system_prompt"] == system["content"]
+    assert json.loads(user["content"]) == {
+        "answer": answer, "required_facts": [original["required_fact"], required_condition],
+    }
+    assert trace["fact_judgment"]["response"] == (None if isinstance(judgment, Exception) else judgment)
+
+    state["offline"] = True
+    call_count = len(calls)
+    assert __main__.main(["replay", run["run_id"], "q1", "--runs", str(tmp_path / "runs")]) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["matches_original"] and replay["score"] == score
+    assert replay["fact_judgment_error"] == error
+    assert len(calls) == call_count
+
+
+def test_replay_legacy_phrase_trace(evaluation, tmp_path, capsys):
+    """保留旧版评分历史，即使语义模型会接受同义答文。"""
+    _, index_path, question, calls, state = evaluation
+    state["response"] = ['{"citations":[2],"error_code":null}\n', "Wait for the screen.", None]
+    run, trace = _run(tmp_path, capsys, index_path, question)
+    assert trace["score"]["passed"]
+
+    run_dir = tmp_path / "runs" / run["run_id"]
+    config_path = run_dir / "run.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["format_version"] = trace["format_version"] = 1
+    config.pop("fact_judgment")
+    trace.pop("fact_judgment")
+    trace.pop("fact_judgment_error")
+    trace["score"]["groups"][0]["fact_present"] = False
+    trace["score"]["passed"] = False
+    trace["score"]["attributions"] = ["missing_fact"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    (run_dir / "traces" / "q1.json").write_text(json.dumps(trace), encoding="utf-8")
+
+    state["offline"] = True
+    call_count = len(calls)
+    assert __main__.main(["replay", run["run_id"], "q1", "--runs", str(tmp_path / "runs")]) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert replay["matches_original"] and replay["score"] == trace["score"]
+    assert len(calls) == call_count

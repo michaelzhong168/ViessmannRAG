@@ -5,6 +5,7 @@ import os
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 
 import pymupdf
@@ -13,13 +14,15 @@ from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
 from manual_rag.answer import (
     DEFAULT_TOP_K, AnswerResult, AnswerTrace, ask, parse_answer_stream, service_error_result,
 )
+from manual_rag.fact_judgment import STRATEGY, decode_judgment, request_judgment
 from manual_rag.index import DEFAULT_INDEX, restore_index
 from manual_rag.question_set import is_identifier, load_question_set, normalize_evidence_text
 from tools import llm
 
 DEFAULT_QUESTIONS = Path("data/eval/golden_manual.jsonl")
 DEFAULT_RUNS = Path("data/eval/runs")
-_FORMAT_VERSION = 1
+_PHRASE_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 
 def _evidence(node: TextNode) -> dict:
@@ -73,7 +76,7 @@ def _match_groups(question: dict, index_nodes: dict[str, dict]) -> list[set[str]
 
 def _score(
     question: dict, index_nodes: dict[str, dict], trace: dict, result: AnswerResult,
-    citation_issues: list[str],
+    citation_issues: list[str], facts: list[bool | None], fact_judgment_error: str | None,
 ) -> dict:
     failure = trace["service_failure"]
     behavior_ok = result.error_code == question["expected_error_code"]
@@ -86,7 +89,6 @@ def _score(
     recalled = {match["node_id"] for match in trace["retrieval"]}
     context = {node["node_id"] for node in trace["context"]}
     cited = {citation.node_id for citation in result.citations}
-    answer = normalize_evidence_text(result.answer)
     groups = [
         {
             "required_fact": group["required_fact"],
@@ -94,9 +96,11 @@ def _score(
             "recalled": bool(matches & recalled),
             "in_context": bool(matches & context),
             "cited": bool(matches & cited),
-            "fact_present": result.error_code is None and normalize_evidence_text(group["required_fact"]) in answer,
+            "fact_present": present,
         }
-        for group, matches in zip(question["evidence_groups"], _match_groups(question, index_nodes))
+        for group, matches, present in zip(
+            question["evidence_groups"], _match_groups(question, index_nodes), facts, strict=True,
+        )
     ]
     answered = behavior_ok and question["expected_error_code"] is None
     citations_ok = not citation_issues and (not answered or all(group["cited"] for group in groups))
@@ -109,7 +113,9 @@ def _score(
         attributions.append("answer_strategy_error")
     if citation_issues or (answered and any(group["in_context"] and not group["cited"] for group in groups)):
         attributions.append("citation_error")
-    if answered and any(group["in_context"] and not group["fact_present"] for group in groups):
+    if fact_judgment_error is not None:
+        attributions.append("service_error")
+    if answered and any(group["in_context"] and group["fact_present"] is False for group in groups):
         attributions.append("missing_fact")
     return {
         "passed": behavior_ok and citations_ok and all(group["fact_present"] for group in groups),
@@ -162,6 +168,11 @@ def run_evaluation(
     frozen_nodes = (_json(nodes) + "\n").encode()
     (run_dir / "questions.jsonl").write_bytes(frozen_questions)
     (run_dir / "evidence.json").write_bytes(frozen_nodes)
+    generation = {
+        "model": (os.environ.get("LLM_MODEL") or "").strip() or None,
+        "temperature": llm.TEMPERATURE,
+        "max_tokens": llm.MAX_TOKENS,
+    }
     _write_json(run_dir / "run.json", {
         "format_version": _FORMAT_VERSION,
         "run_id": run_id,
@@ -173,11 +184,8 @@ def run_evaluation(
         "evidence_sha256": _sha256(frozen_nodes),
         "index": {key: snapshot[key] for key in ("format_version", "layout_version", "source", "embedding_model")},
         "top_k": top_k,
-        "generation": {
-            "model": (os.environ.get("LLM_MODEL") or "").strip() or None,
-            "temperature": llm.TEMPERATURE,
-            "max_tokens": llm.MAX_TOKENS,
-        },
+        "generation": generation,
+        "fact_judgment": {"strategy": STRATEGY, **generation},
     })
 
     passed = 0
@@ -185,6 +193,14 @@ def run_evaluation(
         for row in rows:
             capture = AnswerTrace()
             result = ask(index, row["question"], row["control_type"], top_k=top_k, trace=capture)
+            facts = [group["required_fact"] for group in row["evidence_groups"]]
+            judgment = None
+            if result.error_code is None and facts:
+                started = perf_counter()
+                judgment = request_judgment(result.answer, facts)
+                elapsed = perf_counter() - started
+                capture.timings_s["fact_judgment"] = elapsed
+                capture.timings_s["total"] += elapsed
             record = {
                 "format_version": _FORMAT_VERSION,
                 "run_id": run_id,
@@ -197,6 +213,7 @@ def run_evaluation(
                 "prompt": capture.prompt,
                 "chunks": capture.chunks,
                 "service_failure": capture.service_failure,
+                "fact_judgment": judgment,
             }
             outcome = _outcome(row, nodes, record, result, capture.citation_issues)
             _write_json(traces / f"{row['id']}.json", {**record, **outcome, "timings_s": capture.timings_s})
@@ -209,14 +226,27 @@ def run_evaluation(
 def _outcome(
     row: dict, nodes: dict[str, dict], record: dict, result: AnswerResult, citation_issues: list[str],
 ) -> dict:
-    return {
+    required_facts = [group["required_fact"] for group in row["evidence_groups"]]
+    legacy = record["format_version"] == _PHRASE_FORMAT_VERSION
+    facts: list[bool | None] = [False] * len(required_facts)
+    judgment_error = None
+    if result.error_code is None and required_facts:
+        if legacy:
+            answer = normalize_evidence_text(result.answer)
+            facts = [normalize_evidence_text(fact) in answer for fact in required_facts]
+        else:
+            facts, judgment_error = decode_judgment(record["fact_judgment"], result.answer, required_facts)
+    outcome = {
         "question_id": row["id"],
         "expected_error_code": row["expected_error_code"],
         "result": asdict(result),
         "service_failure": record["service_failure"],
         "citation_issues": citation_issues,
-        "score": _score(row, nodes, record, result, citation_issues),
+        "score": _score(row, nodes, record, result, citation_issues, facts, judgment_error),
     }
+    if not legacy:
+        outcome["fact_judgment_error"] = judgment_error
+    return outcome
 
 
 def replay_question(runs: Path, run_id: str, question_id: str) -> dict:
@@ -226,9 +256,14 @@ def replay_question(runs: Path, run_id: str, question_id: str) -> dict:
     run_dir = runs / run_id
     config = json.loads((run_dir / "run.json").read_bytes())
     record = json.loads((run_dir / "traces" / f"{question_id}.json").read_bytes())
-    if any(item["format_version"] != _FORMAT_VERSION or item["run_id"] != run_id
-           for item in (config, record)) or record["question_id"] != question_id:
+    version = config["format_version"]
+    if (
+        version not in (_PHRASE_FORMAT_VERSION, _FORMAT_VERSION) or record["format_version"] != version
+        or config["run_id"] != run_id or record["run_id"] != run_id or record["question_id"] != question_id
+    ):
         raise ValueError("运行或 Trace 格式及标识不匹配")
+    if version == _FORMAT_VERSION and config["fact_judgment"]["strategy"] != STRATEGY:
+        raise ValueError("事实判定版本不匹配")
 
     questions = (run_dir / "questions.jsonl").read_bytes()
     evidence = (run_dir / "evidence.json").read_bytes()
