@@ -189,3 +189,35 @@ data: {"answer":"请先选择设备操作面板。","citations":[],"error_code":
 报告逐事实组列出是否入库、原始召回、进入模型上下文、被引用和出现在答案中。证据按文档、PDF 版本、物理页、引文与可选坐标匹配当前节点，含补入的同节步骤。新运行对有必要事实的正常答复使用同一配置模型额外做一次语义判定。判定允许同义改写，并要求保留数值、单位、顺序和适用条件。人工复核仍负责确认忠实性与操作完整性。
 
 `eval` 完成记录时退出 0，题目结果见报告的 `score`。归因包括资料缺失 `missing_material`、召回遗漏 `retrieval_miss`、应答策略错误 `answer_strategy_error`、引用错误 `citation_error`、事实遗漏 `missing_fact` 和服务异常 `service_error`，同一题可能有多个归因。事实判定请求、原始响应或失败类别保存在 Trace。判定请求异常或响应无效时，`fact_present` 为 `null`，报告保留 `fact_judgment_error`，归因为 `service_error`。回放用冻结材料重算，无需模型配置及索引原文件。格式 1 继续按当时的短语规则回放。回放结果与现场逐题判定一致时 `matches_original` 为 `true`，并退出 0。
+
+## R02-03 · 汇总与基线冻结
+
+分别对工程调试集和已核定的正式留出集运行 `eval`，各自生成报告。使用 `--question-id` 时，报告和图会注明单题范围。
+
+```bash
+.venv/bin/python -m manual_rag eval --split debug
+.venv/bin/python -m manual_rag eval --split holdout
+```
+
+每个新运行目录完整生成后才发布。在运行目录中打开 `attributions.html` 查看失败归因条形图。图从 `report.jsonl` 生成，同题同类只计一次，一题可出现在多类中。汇总 `summary.json` 记录样本量、通过数、以下比例的分子与分母，以及逐题端到端耗时的合计、均值、中位数和最近秩 P95（秒）。空分母的比例值为 `null`。
+
+| 指标 | 分子 | 分母 |
+| --- | --- | --- |
+| 证据覆盖率 | 逐题评分确认进入模型上下文的证据组数 | 本次全部标注证据组数 |
+| 引用检查通过率 | 完成预期应答且通过引用检查的题数 | 本次所有预期应答题数 |
+| 必答事实通过率 | 判定通过的必答事实数 | 本次所有必答事实数 |
+| 应答行为准确率 | 行为与预期一致的题数 | 本次评测题数 |
+
+服务异常计入适用指标的分母，缺少判定的条目不计入分子。
+
+`run.json` 保存题集版本与选题范围、冻结文件的摘要、PDF 指纹、分块规则版本、Embedding 与生成模型、检索深度、事实判定策略、评分规则版本和评测源码指纹。源码指纹按路径和内容覆盖 `manual_rag/*.py` 及 `tools/*.py`。每次运行保留本次选题的 `questions.jsonl`、完整向量 `index.json`、`evidence.json` 与逐题 Trace。所有材料留在本机。
+
+在线复跑时使用相同源码及模型配置，从 `run.json` 取分集和 `top_k`，把输入路径指向冻结副本，结果写入新的运行目录。下例使用调试集和默认检索深度 12。
+
+```bash
+run_dir="data/eval/runs/运行ID"
+.venv/bin/python -m manual_rag eval --questions "$run_dir/questions.jsonl" \
+  --index "$run_dir/index.json" --split debug --top-k 12
+```
+
+要复现当次判定，使用 `replay` 从冻结材料离线重算。较早运行仍可用原有回放入口。

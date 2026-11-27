@@ -20,7 +20,7 @@ class _ModelStream(httpx.SyncByteStream):
 
     def __iter__(self):
         for chunk in self.chunks:
-            if isinstance(chunk, Exception):
+            if isinstance(chunk, BaseException):
                 raise chunk
             choice = {"delta": {"content": chunk}, "finish_reason": "stop" if chunk is None else None}
             yield f"data: {json.dumps({'choices': [choice]})}\n\n".encode()
@@ -113,6 +113,22 @@ def _run(tmp_path, capsys, index_path, question):
     trace = json.loads(contents)
     assert report["score"] == trace["score"]
     assert run["passed"] == trace["score"]["passed"]
+    config = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    frozen_index = (run_dir / "index.json").read_bytes()
+    assert frozen_index == index_path.read_bytes()
+    assert config["index_sha256"] == sha256(frozen_index).hexdigest()
+    assert config["index"]["source"]["pdf_version"]
+    assert config["index"]["layout_version"] == nodes.LAYOUT_VERSION
+    assert config["top_k"] == 1 and config["generation"]["model"] == "offline-chat"
+    assert len(config["evaluation_code_sha256"]) == 64 and config["scoring_version"] == 1
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["split"] == "debug" and summary["question_count"] == 1
+    assert summary["passed"] == run["passed"]
+    assert summary["latency_s"]["mean"] == report["timings_s"]["total"]
+    assert {key for key, count in summary["attributions"].items() if count} == set(
+        trace["score"]["attributions"]
+    )
     return run, trace
 
 
@@ -320,3 +336,41 @@ def test_replay_legacy_phrase_trace(evaluation, tmp_path, capsys):
     replay = json.loads(capsys.readouterr().out)
     assert replay["matches_original"] and replay["score"] == trace["score"]
     assert len(calls) == call_count
+
+
+def test_holdout_summary_scope(evaluation, tmp_path, capsys):
+    """留出集单题运行标明分集、样本量和过滤条件，空分母可区分于 0%。"""
+    _, index_path, question, _, state = evaluation
+    state["response"] = ['{"citations":[],"error_code":"clarify_fault"}\n', "Clarify fault.", None]
+    holdout = {
+        **question, "id": "q2", "intent_id": "holdout", "split": "holdout",
+        "expected_error_code": "clarify_fault", "evidence_groups": [],
+    }
+    questions = tmp_path / "questions.jsonl"
+    questions.write_text("".join(json.dumps(row) + "\n" for row in (question, holdout)), encoding="utf-8")
+    assert __main__.main([
+        "eval", "--questions", str(questions), "--index", str(index_path),
+        "--runs", str(tmp_path / "runs"), "--split", "holdout", "--question-id", "q2",
+    ]) == 0
+    run_dir = tmp_path / "runs" / json.loads(capsys.readouterr().out)["run_id"]
+    summary = json.loads((run_dir / "summary.json").read_bytes())
+    assert (summary["split"], summary["question_id"], summary["question_count"]) == ("holdout", "q2", 1)
+    for key in ("citations_pass_rate", "required_fact_pass_rate", "evidence_coverage"):
+        assert summary[key] == {"numerator": 0, "denominator": 0, "rate": None}
+    chart = (run_dir / "attributions.html").read_text(encoding="utf-8")
+    assert "正式留出集 · 指定题目 q2 · 样本量 1 题" in chart
+    assert sorted(path.stem for path in (run_dir / "traces").glob("*.json")) == ["q2"]
+
+
+def test_interrupted_evaluation_does_not_publish(evaluation, tmp_path, capsys):
+    """上游中断之后没有公开的残缺运行，原索引完整且可以重试。"""
+    _, index_path, question, _, state = evaluation
+    original_index = index_path.read_bytes()
+    state["response"] = [KeyboardInterrupt()]
+    with pytest.raises(KeyboardInterrupt):
+        _run(tmp_path, capsys, index_path, question)
+    assert not list((tmp_path / "runs").iterdir())
+    assert index_path.read_bytes() == original_index
+    state["response"] = ['{"citations":[2],"error_code":null}\n', "Wait for display.", None]
+    run, _ = _run(tmp_path, capsys, index_path, question)
+    assert run["passed"] == 1
