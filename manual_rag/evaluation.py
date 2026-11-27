@@ -5,15 +5,18 @@ import os
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import perf_counter
 from uuid import uuid4
 
 import pymupdf
+from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
 
 from manual_rag.answer import (
     DEFAULT_TOP_K, AnswerResult, AnswerTrace, ask, parse_answer_stream, service_error_result,
 )
+from manual_rag.evaluation_summary import render_attribution_chart, summarize_report
 from manual_rag.fact_judgment import STRATEGY, decode_judgment, request_judgment
 from manual_rag.index import DEFAULT_INDEX, restore_index
 from manual_rag.question_set import is_identifier, load_question_set, normalize_evidence_text
@@ -23,6 +26,14 @@ DEFAULT_QUESTIONS = Path("data/eval/golden_manual.jsonl")
 DEFAULT_RUNS = Path("data/eval/runs")
 _PHRASE_FORMAT_VERSION = 1
 _FORMAT_VERSION = 2
+_SCORING_VERSION = 1
+
+
+def _evaluation_code_sha256() -> str:
+    root = Path(__file__).resolve().parents[1]
+    sources = sorted([*root.glob("manual_rag/*.py"), *root.glob("tools/*.py")])
+    manifest = {path.relative_to(root).as_posix(): _sha256(path.read_bytes()) for path in sources}
+    return _sha256(_json(manifest).encode("utf-8"))
 
 
 def _evidence(node: TextNode) -> dict:
@@ -142,7 +153,7 @@ def run_evaluation(
     questions_path: Path = DEFAULT_QUESTIONS, index_path: Path = DEFAULT_INDEX, runs: Path = DEFAULT_RUNS,
     *, split: str = "debug", question_id: str | None = None, top_k: int = DEFAULT_TOP_K,
 ) -> dict:
-    """运行指定分集并保存逐题报告和回放材料，返回运行 ID、路径和通过数。"""
+    """评测指定分集，完整发布冻结材料和汇总后返回运行 ID、路径和通过数。"""
     if type(top_k) is not int or top_k < 1:
         raise ValueError("top_k 须为正整数")
     rows = [row for row in load_question_set(questions_path)
@@ -161,34 +172,50 @@ def run_evaluation(
     run_id = uuid4().hex
     run_dir = runs / run_id
     runs.mkdir(parents=True, exist_ok=True, mode=0o700)
-    run_dir.mkdir(mode=0o700)
-    traces = run_dir / "traces"
-    traces.mkdir()
-    frozen_questions = "".join(_json(row) + "\n" for row in rows).encode()
-    frozen_nodes = (_json(nodes) + "\n").encode()
-    (run_dir / "questions.jsonl").write_bytes(frozen_questions)
-    (run_dir / "evidence.json").write_bytes(frozen_nodes)
-    generation = {
-        "model": (os.environ.get("LLM_MODEL") or "").strip() or None,
-        "temperature": llm.TEMPERATURE,
-        "max_tokens": llm.MAX_TOKENS,
-    }
-    _write_json(run_dir / "run.json", {
-        "format_version": _FORMAT_VERSION,
-        "run_id": run_id,
-        "dataset_version": rows[0]["dataset_version"],
-        "questions_sha256": _sha256(frozen_questions),
-        "split": split,
-        "question_count": len(rows),
-        "index_sha256": _sha256(index_bytes),
-        "evidence_sha256": _sha256(frozen_nodes),
-        "index": {key: snapshot[key] for key in ("format_version", "layout_version", "source", "embedding_model")},
-        "top_k": top_k,
-        "generation": generation,
-        "fact_judgment": {"strategy": STRATEGY, **generation},
-    })
+    with TemporaryDirectory(dir=runs, prefix=".pending-") as directory:
+        staged = Path(directory) / run_id
+        staged.mkdir(mode=0o700)
+        (staged / "traces").mkdir()
+        frozen_questions = "".join(_json(row) + "\n" for row in rows).encode()
+        frozen_nodes = (_json(nodes) + "\n").encode()
+        (staged / "index.json").write_bytes(index_bytes)
+        (staged / "questions.jsonl").write_bytes(frozen_questions)
+        (staged / "evidence.json").write_bytes(frozen_nodes)
+        generation = {
+            "model": (os.environ.get("LLM_MODEL") or "").strip() or None,
+            "temperature": llm.TEMPERATURE,
+            "max_tokens": llm.MAX_TOKENS,
+        }
+        config = {
+            "format_version": _FORMAT_VERSION,
+            "run_id": run_id,
+            "dataset_version": rows[0]["dataset_version"],
+            "questions_sha256": _sha256(frozen_questions),
+            "split": split,
+            "question_id": question_id,
+            "question_count": len(rows),
+            "evaluation_code_sha256": _evaluation_code_sha256(),
+            "scoring_version": _SCORING_VERSION,
+            "index_sha256": _sha256(index_bytes),
+            "evidence_sha256": _sha256(frozen_nodes),
+            "index": {key: snapshot[key] for key in ("format_version", "layout_version", "source", "embedding_model")},
+            "top_k": top_k,
+            "generation": generation,
+            "fact_judgment": {"strategy": STRATEGY, **generation},
+        }
+        _write_json(staged / "run.json", config)
 
-    passed = 0
+        _record_questions(staged, rows, index, nodes, run_id, top_k)
+        summary = summarize_report(staged / "report.jsonl", config, rows)
+        _write_json(staged / "summary.json", summary)
+        (staged / "attributions.html").write_text(render_attribution_chart(summary), encoding="utf-8")
+        staged.rename(run_dir)
+    return {"run_id": run_id, "run_dir": str(run_dir), "question_count": len(rows), "passed": summary["passed"]}
+
+
+def _record_questions(
+    run_dir: Path, rows: list[dict], index: VectorStoreIndex, nodes: dict[str, dict], run_id: str, top_k: int,
+) -> None:
     with (run_dir / "report.jsonl").open("w", encoding="utf-8") as report:
         for row in rows:
             capture = AnswerTrace()
@@ -216,11 +243,8 @@ def run_evaluation(
                 "fact_judgment": judgment,
             }
             outcome = _outcome(row, nodes, record, result, capture.citation_issues)
-            _write_json(traces / f"{row['id']}.json", {**record, **outcome, "timings_s": capture.timings_s})
+            _write_json(run_dir / "traces" / f"{row['id']}.json", {**record, **outcome, "timings_s": capture.timings_s})
             report.write(_json({**outcome, "timings_s": capture.timings_s}) + "\n")
-            report.flush()
-            passed += outcome["score"]["passed"]
-    return {"run_id": run_id, "run_dir": str(run_dir), "question_count": len(rows), "passed": passed}
 
 
 def _outcome(
