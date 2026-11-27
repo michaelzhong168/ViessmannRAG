@@ -17,11 +17,13 @@ _EXPECTED_CODES = (
 )
 
 
-def _normalize(text: str) -> str:
+def normalize_evidence_text(text: str) -> str:
+    """忽略 PDF 排版空白，保留引文中的其余字符。"""
     return "".join(text.split())
 
 
-def _identifier(value) -> bool:
+def is_identifier(value: object) -> bool:
+    """检查可作为本地文件名的题集标识符。"""
     return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value) is not None
 
 
@@ -54,7 +56,7 @@ def _check_question(row) -> None:
     if not isinstance(row, dict):
         raise ValueError("每行必须为一个题目对象")
     for key in ("dataset_version", "id", "intent_id"):
-        if not _identifier(row.get(key)):
+        if not is_identifier(row.get(key)):
             raise ValueError(f"{key} 必须为小写 ASCII 标识符")
     _required_text(row, "question")
     if row.get("split") not in ("debug", "holdout"):
@@ -130,8 +132,8 @@ def check_pdf_anchors(rows: list[dict], pdf_path: Path, scopes_path: Path) -> No
                         page_bounds = page.rect * page.derotation_matrix
                         if not page_bounds.contains(clip):
                             raise ValueError(f"{location}：bbox 超出物理页")
-                    text = _normalize(page.get_text(clip=clip))
-                    quote = _normalize(anchor["quote"])
+                    text = normalize_evidence_text(page.get_text(clip=clip))
+                    quote = normalize_evidence_text(anchor["quote"])
                     first = text.find(quote)
                     if first < 0 or text.find(quote, first + 1) >= 0:
                         raise ValueError(f"{location}：原文未唯一匹配，请核对引文或用 bbox 消歧")

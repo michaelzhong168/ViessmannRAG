@@ -62,7 +62,11 @@ def load_index(
 ) -> VectorStoreIndex:
     """从已发布快照重载索引。格式或 EMBED_MODEL 不兼容时提示重新建库。"""
     with Path(index_path).open(encoding="utf-8") as stream:
-        snapshot = json.load(stream)
+        return restore_index(json.load(stream), timeout=timeout)
+
+
+def restore_index(snapshot: dict, *, timeout: float | None = None) -> VectorStoreIndex:
+    """从已读取的发布快照重载索引，沿用格式和向量模型检查。"""
     if snapshot.get("format_version") != _FORMAT_VERSION:
         raise ValueError("索引格式不匹配，请运行 index 重新建库")
     embed = BailianEmbedding(timeout=timeout)

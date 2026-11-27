@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from dataclasses import dataclass, field, replace
+from time import perf_counter
 
 from httpx import TimeoutException, TransportError
 from llama_index.core import VectorStoreIndex
@@ -57,6 +58,20 @@ class AnswerResult:
     error_code: str | None = None
 
 
+@dataclass
+class AnswerTrace:
+    """单次问答的可选本地记录。耗时以秒计，流片段按应用读取顺序保留。"""
+
+    retrieval: list[dict] = field(default_factory=list)
+    context: list[TextNode] = field(default_factory=list)
+    system_prompt: str | None = None
+    prompt: str | None = None
+    chunks: list[str] = field(default_factory=list)
+    citation_issues: list[str] = field(default_factory=list)
+    timings_s: dict[str, float] = field(default_factory=dict)
+    service_failure: dict[str, str] | None = None
+
+
 def _with_related_steps(index: VectorStoreIndex, nodes: list[TextNode]) -> list[TextNode]:
     """补齐已召回操作步骤同页同节的其他步骤，避免只给出半段操作。"""
     sections = {(node.ref_doc_id, node.metadata["page_no"], node.metadata["section"])
@@ -77,22 +92,31 @@ def _invalid_reply() -> AnswerResult:
     return AnswerResult("模型返回的回答或引用格式无效。", error_code="invalid_model_response")
 
 
-def _answer_metadata(payload: dict, nodes: list[TextNode]) -> AnswerResult:
+def _answer_metadata(payload: dict, nodes: list[TextNode], citation_issues: list[str] | None) -> AnswerResult:
     """校验状态和引用。空正文表示可以接收模型正文。"""
     indices = payload.get("citations")
     code = payload.get("error_code")
     if (
         "error_code" not in payload
         or (code is not None and (not isinstance(code, str) or code not in _MODEL_CODES))
-        or not isinstance(indices, list)
     ):
+        return _invalid_reply()
+    if not isinstance(indices, list):
+        if citation_issues is not None:
+            citation_issues.append("invalid_citations")
         return _invalid_reply()
     if code == "safety_notice":
         # 说明书片段可能列出正文省略的现场处置步骤。
+        if indices and citation_issues is not None:
+            citation_issues.append("unexpected_safety_citations")
         return AnswerResult("", error_code=code)
     if any(type(i) is not int or not 1 <= i <= len(nodes) for i in indices):
+        if citation_issues is not None:
+            citation_issues.append("invalid_citations")
         return _invalid_reply()
     if code is None and not indices:
+        if citation_issues is not None:
+            citation_issues.append("missing_citations")
         return AnswerResult("当前回答缺少可核对的说明书依据。", error_code="insufficient_evidence")
     citations = []
     for i in dict.fromkeys(indices):
@@ -104,9 +128,11 @@ def _answer_metadata(payload: dict, nodes: list[TextNode]) -> AnswerResult:
     return AnswerResult("", citations, code)
 
 
-def _stream_answer(
+def parse_answer_stream(
     chunks: Iterator[str], nodes: list[TextNode], on_delta: Callable[[str], None] | None,
+    citation_issues: list[str] | None = None,
 ) -> AnswerResult:
+    """按共享协议解析正文和引用，并可记录触发回退的引用错误。"""
     header = ""
     for chunk in chunks:
         line, separator, first_text = chunk.partition("\n")
@@ -122,7 +148,7 @@ def _stream_answer(
         return _invalid_reply()
     if not isinstance(payload, dict):
         return _invalid_reply()
-    result = _answer_metadata(payload, nodes)
+    result = _answer_metadata(payload, nodes, citation_issues)
     if result.answer:
         return result
 
@@ -139,13 +165,38 @@ def _stream_answer(
     return replace(result, answer=answer) if answer else _invalid_reply()
 
 
+def service_error_result(code: str) -> AnswerResult:
+    """按稳定错误码构造问答服务失败结果，供现场和回放共用。"""
+    return AnswerResult({
+        "model_timeout": "模型服务请求超时。",
+        "model_service_error": "模型服务请求失败。",
+    }[code], error_code=code)
+
+
+def _record_chunks(chunks: Iterator[str], trace: AnswerTrace) -> Iterator[str]:
+    for chunk in chunks:
+        trace.chunks.append(chunk)
+        yield chunk
+
+
 def ask(
     index: VectorStoreIndex, question: str, control_type: str | None = None, *, top_k: int = DEFAULT_TOP_K,
     on_delta: Callable[[str], None] | None = None, timeout: float | None = None,
+    trace: AnswerTrace | None = None,
 ) -> AnswerResult:
     """语义检索后接收流式答复。提供回调时，在引用校验后逐块传出正文。"""
+    started = stage_started = perf_counter()
+    stage = "retrieval"
     try:
         matches = retrieve_nodes(index, question, top_k=top_k)
+        if trace is not None:
+            trace.timings_s[stage] = perf_counter() - stage_started
+            trace.retrieval = [
+                {"node_id": result.node.node_id, "rank": rank, "score": result.score}
+                for rank, result in enumerate(matches, 1)
+            ]
+        stage = "context"
+        stage_started = perf_counter()
         nodes = [result.node for result in matches
                  if isinstance(result.node, TextNode) and result.node.source_node is not None]
         nodes = _with_related_steps(index, nodes)
@@ -158,9 +209,28 @@ def ask(
                 for i, node in enumerate(nodes, 1)
             ],
         }, ensure_ascii=False)
+        if trace is not None:
+            trace.context = nodes
+            trace.system_prompt = _ANSWER_PROMPT
+            trace.prompt = prompt
+            trace.timings_s[stage] = perf_counter() - stage_started
+        stage = "generation"
+        stage_started = perf_counter()
         with closing(llm.stream(prompt, system_prompt=_ANSWER_PROMPT, timeout=timeout)) as chunks:
-            return _stream_answer(chunks, nodes, on_delta)
-    except (APITimeoutError, TimeoutException):
-        return AnswerResult("模型服务请求超时。", error_code="model_timeout")
-    except (OpenAIError, TransportError):
-        return AnswerResult("模型服务请求失败。", error_code="model_service_error")
+            if trace is None:
+                return parse_answer_stream(chunks, nodes, on_delta)
+            return parse_answer_stream(_record_chunks(chunks, trace), nodes, on_delta, trace.citation_issues)
+    except (OpenAIError, TransportError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, (APITimeoutError, TimeoutException)):
+            code = "model_timeout"
+        elif isinstance(exc, (OpenAIError, TransportError)) or (trace is not None and stage != "context"):
+            code = "model_service_error"
+        else:
+            raise
+        if trace is not None:
+            trace.service_failure = {"stage": stage, "error_code": code, "category": type(exc).__name__}
+        return service_error_result(code)
+    finally:
+        if trace is not None:
+            trace.timings_s[stage] = perf_counter() - stage_started
+            trace.timings_s["total"] = perf_counter() - started
